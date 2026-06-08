@@ -1,0 +1,62 @@
+{
+  "name": "html-visual-editor",
+  "publisher": "ezlifetech",
+  "displayName": "HTML Visual Editor",
+  "description": "WYSIWYG HTML editor with real-time preview, drag-and-drop, and component library",
+  "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ezlifetech/html-visual-editor"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "htmlVisualEditor.editor",
+        "displayName": "HTML Visual Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.html"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "htmlVisualEditor.open",
+        "title": "Open with HTML Visual Editor"
+      }
+    ]
+  },
+  "main": "./dist/extension.js",
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.config.js",
+    "watch": "node esbuild.config.js --watch",
+    "compile": "npm run build"
+  },
+  "devDependencies": {
+    "@types/marked": "^5.0.2",
+    "@types/node": "^18.11.9",
+    "@types/quill": "^2.0.14",
+    "@types/turndown": "^5.0.6",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.8",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.19.5",
+    "typescript": "^5.3.2"
+  },
+  "dependencies": {
+    "marked": "^18.0.5",
+    "monaco-editor": "^0.50.0",
+    "parse5": "^7.1.2",
+    "quill": "^2.0.3",
+    "turndown": "^7.2.4"
+  }
+}

@@ -1,0 +1,481 @@
+import Quill from 'quill';
+// @ts-ignore
+import quillCss from 'quill/dist/quill.snow.css';
+
+declare const acquireVsCodeApi: () => { postMessage: (msg: unknown) => void; };
+
+// ── Inject Quill CSS ─────────────────────────────────────────────────────────
+const styleEl = document.createElement('style');
+styleEl.textContent = quillCss as string;
+document.head.appendChild(styleEl);
+
+// ── Allow relative URLs in Quill links ───────────────────────────────────────
+const Link = Quill.import('formats/link') as any;
+const _sanitize = Link.sanitize.bind(Link);
+Link.sanitize = (url: string) => {
+  if (!url || url.startsWith('#') || url.startsWith('.') || url.startsWith('/') || url.startsWith('data:')) return url;
+  return _sanitize(url);
+};
+
+const vscode = acquireVsCodeApi();
+
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const saveBtn        = document.getElementById('saveBtn')!;
+const statusEl       = document.getElementById('status')!;
+const sourceArea     = document.getElementById('sourceArea') as HTMLTextAreaElement;
+const preview        = document.getElementById('preview') as HTMLIFrameElement;
+const editorWrap     = document.getElementById('editorWrap')!;
+const rightLabel     = document.getElementById('rightLabel')!;
+const btnRich        = document.getElementById('btnRich')!;
+const btnPreview     = document.getElementById('btnPreview')!;
+// Font zoom
+const zoomInBtn      = document.getElementById('zoomIn')!;
+const zoomOutBtn     = document.getElementById('zoomOut')!;
+const zoomLabel      = document.getElementById('zoomLabel')!;
+// Panel-width presets
+const panelLeft      = document.getElementById('panelLeft')! as HTMLElement;
+const resizer        = document.getElementById('resizer')! as HTMLElement;
+const splitEl        = document.getElementById('split')! as HTMLElement;
+const winNarrow      = document.getElementById('winNarrow')!;
+const winHalf        = document.getElementById('winHalf')!;
+const winWide        = document.getElementById('winWide')!;
+// Left search
+const searchLeftBar   = document.getElementById('searchLeft')!;
+const searchLeftInput = document.getElementById('searchLeftInput') as HTMLInputElement;
+const searchLeftCount = document.getElementById('searchLeftCount')!;
+const searchLeftPrev  = document.getElementById('searchLeftPrev')!;
+const searchLeftNext  = document.getElementById('searchLeftNext')!;
+const searchLeftClose = document.getElementById('searchLeftClose')!;
+const searchLeftBtn   = document.getElementById('searchLeftBtn')!;
+// Right search
+const searchRightBar   = document.getElementById('searchRight')!;
+const searchRightInput = document.getElementById('searchRightInput') as HTMLInputElement;
+const searchRightCount = document.getElementById('searchRightCount')!;
+const searchRightPrev  = document.getElementById('searchRightPrev')!;
+const searchRightNext  = document.getElementById('searchRightNext')!;
+const searchRightClose = document.getElementById('searchRightClose')!;
+const searchRightBtn   = document.getElementById('searchRightBtn')!;
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let richMode   = true;   // Rich Editor is the default right-panel view
+let isDirty    = false;
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+let fontSize   = 13;
+
+// ── Quill ─────────────────────────────────────────────────────────────────────
+const quill = new Quill('#editor', {
+  theme: 'snow',
+  placeholder: '開始輸入內容...',
+  modules: {
+    toolbar: [
+      [{ header: [1, 2, 3, 4, 5, 6, false] }],
+      [{ font: [] }],
+      [{ size: ['small', false, 'large', 'huge'] }],
+      ['bold', 'italic', 'underline', 'strike'],
+      [{ color: [] }, { background: [] }],
+      [{ script: 'sub' }, { script: 'super' }],
+      [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
+      [{ indent: '-1' }, { indent: '+1' }],
+      [{ align: [] }],
+      ['blockquote', 'code-block'],
+      ['link', 'image', 'video'],
+      ['clean'],
+    ],
+    history: { delay: 1000, maxStack: 500, userOnly: true },
+  },
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function setStatus(msg: string, ok?: boolean) {
+  statusEl.textContent = msg;
+  statusEl.className = 'status' + (ok === true ? ' saved' : ok === false ? ' error' : '');
+}
+
+function getRichHtml(): string {
+  return typeof (quill as any).getSemanticHTML === 'function'
+    ? (quill as any).getSemanticHTML()
+    : quill.root.innerHTML;
+}
+
+function wrapHtml(body: string): string {
+  return `<!DOCTYPE html><html lang="zh-TW">
+<head><meta charset="UTF-8">
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+         max-width: 900px; margin: 24px auto; padding: 0 20px; line-height: 1.8; color: #1a1a1a; }
+  h1,h2,h3 { border-bottom: 1px solid #e0e0e0; padding-bottom: 6px; margin: 20px 0 10px; }
+  code { background: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-size: .9em; }
+  pre  { background: #f4f4f4; padding: 16px; overflow-x: auto; border-radius: 4px; }
+  blockquote { border-left: 4px solid #667eea; margin: 0; padding-left: 16px; color: #555; }
+  table { border-collapse: collapse; width: 100%; }
+  th,td { border: 1px solid #ddd; padding: 8px 12px; }
+  th { background: #f8f8f8; }
+  img { max-width: 100%; }
+  a { color: #667eea; cursor: pointer; }
+</style>
+</head><body>${body}</body></html>`;
+}
+
+// ── Load HTML ─────────────────────────────────────────────────────────────────
+function loadHtml(html: string) {
+  sourceArea.value = html;
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  const inner = bodyMatch ? bodyMatch[1].trim() : html;
+  quill.clipboard.dangerouslyPasteHTML(inner);
+  if (!richMode) refreshPreview();
+  isDirty = false;
+  setStatus('');
+}
+
+// ── Preview sync ──────────────────────────────────────────────────────────────
+function schedulePreview() {
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshPreview, 350);
+}
+
+function refreshPreview() {
+  const raw = sourceArea.value;
+  const full = /^\s*<!DOCTYPE/i.test(raw) || /^\s*<html/i.test(raw);
+  preview.srcdoc = full ? raw : wrapHtml(raw);
+}
+
+preview.addEventListener('load', () => {
+  attachLinkInterceptor();
+  // Re-run preview search highlights if search is open
+  if (searchRightBar.style.display !== 'none' && !richMode && searchRightInput.value) {
+    doSearchRight();
+  }
+});
+
+function attachLinkInterceptor() {
+  try {
+    const doc = preview.contentDocument;
+    if (!doc) return;
+    doc.addEventListener('click', (e: MouseEvent) => {
+      const a = (e.target as Element | null)?.closest('a') as HTMLAnchorElement | null;
+      if (!a) return;
+      const raw = a.getAttribute('href') || '';
+      if (!raw || raw.startsWith('#')) return;
+      e.preventDefault();
+      vscode.postMessage({ type: 'openLink', raw });
+    });
+  } catch (_) {}
+}
+
+// ── Right panel: Rich ↔ Preview toggle ───────────────────────────────────────
+function setRichMode(rich: boolean) {
+  richMode = rich;
+  if (rich) {
+    editorWrap.style.display = 'flex';
+    preview.style.display    = 'none';
+    rightLabel.textContent   = 'Rich Text Editor';
+    btnRich.classList.add('active');
+    btnPreview.classList.remove('active');
+    // Sync source → Quill
+    const bodyMatch = sourceArea.value.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    const inner = bodyMatch ? bodyMatch[1].trim() : sourceArea.value;
+    quill.clipboard.dangerouslyPasteHTML(inner);
+  } else {
+    editorWrap.style.display = 'none';
+    preview.style.display    = 'block';
+    rightLabel.textContent   = 'Live Preview';
+    btnRich.classList.remove('active');
+    btnPreview.classList.add('active');
+    refreshPreview();
+  }
+  // Close right search when switching modes
+  closeSearchRight();
+}
+
+btnRich.addEventListener('click',    () => setRichMode(true));
+btnPreview.addEventListener('click', () => setRichMode(false));
+
+// ── Font zoom ─────────────────────────────────────────────────────────────────
+function applyZoom() {
+  sourceArea.style.fontSize = `${fontSize}px`;
+  zoomLabel.textContent = `${fontSize}px`;
+}
+zoomInBtn.addEventListener('click',  () => { if (fontSize < 28) { fontSize++; applyZoom(); } });
+zoomOutBtn.addEventListener('click', () => { if (fontSize > 10) { fontSize--; applyZoom(); } });
+
+// ── Panel-width presets ───────────────────────────────────────────────────────
+function setPanelWidth(pct: number) {
+  panelLeft.style.flex = `0 0 ${pct}%`;
+  [winNarrow, winHalf, winWide].forEach(b => b.classList.remove('active'));
+  if (pct === 30) winNarrow.classList.add('active');
+  else if (pct === 50) winHalf.classList.add('active');
+  else if (pct === 70) winWide.classList.add('active');
+}
+winNarrow.addEventListener('click', () => setPanelWidth(30));
+winHalf.addEventListener('click',   () => setPanelWidth(50));
+winWide.addEventListener('click',   () => setPanelWidth(70));
+
+// ── Drag-to-resize ────────────────────────────────────────────────────────────
+let dragging = false, dragStartX = 0, dragStartWidth = 0;
+resizer.addEventListener('mousedown', (e) => {
+  dragging = true;
+  dragStartX = e.clientX;
+  dragStartWidth = panelLeft.getBoundingClientRect().width;
+  resizer.classList.add('dragging');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  preview.style.pointerEvents = 'none';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const total = splitEl.getBoundingClientRect().width;
+  const pct = Math.min(90, Math.max(10, ((dragStartWidth + e.clientX - dragStartX) / total) * 100));
+  panelLeft.style.flex = `0 0 ${pct.toFixed(1)}%`;
+});
+document.addEventListener('mouseup', () => {
+  if (!dragging) return;
+  dragging = false;
+  resizer.classList.remove('dragging');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+  preview.style.pointerEvents = '';
+});
+
+// ── Dirty tracking ────────────────────────────────────────────────────────────
+sourceArea.addEventListener('input', () => {
+  if (!isDirty) { isDirty = true; setStatus('● 未保存'); }
+  schedulePreview();
+});
+sourceArea.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const s = sourceArea.selectionStart, end = sourceArea.selectionEnd;
+    sourceArea.value = sourceArea.value.slice(0, s) + '  ' + sourceArea.value.slice(end);
+    sourceArea.selectionStart = sourceArea.selectionEnd = s + 2;
+    schedulePreview();
+  }
+});
+quill.on('text-change', () => {
+  if (!richMode) return;
+  if (!isDirty) { isDirty = true; setStatus('● 未保存'); }
+  sourceArea.value = getRichHtml();
+  schedulePreview();
+});
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+function save() {
+  vscode.postMessage({ type: 'save', payload: { html: sourceArea.value } });
+  setStatus('⏳ 保存中...');
+}
+saveBtn.addEventListener('click', save);
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── LEFT SEARCH (Source Code textarea) ──────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+let leftMatches: Array<{start: number; end: number}> = [];
+let leftIdx = -1;
+
+function openSearchLeft() {
+  searchLeftBar.style.display = 'flex';
+  searchLeftInput.focus();
+  searchLeftInput.select();
+  runSearchLeft();
+}
+function closeSearchLeft() {
+  searchLeftBar.style.display = 'none';
+  leftMatches = [];
+  leftIdx = -1;
+  searchLeftCount.textContent = '';
+  searchLeftInput.classList.remove('no-match');
+}
+function runSearchLeft() {
+  const q = searchLeftInput.value;
+  leftMatches = [];
+  leftIdx = -1;
+  searchLeftInput.classList.remove('no-match');
+  if (!q) { searchLeftCount.textContent = ''; return; }
+  const text  = sourceArea.value;
+  const lower = text.toLowerCase();
+  const ql    = q.toLowerCase();
+  let pos = 0;
+  while ((pos = lower.indexOf(ql, pos)) !== -1) {
+    leftMatches.push({ start: pos, end: pos + q.length });
+    pos += q.length;
+  }
+  if (leftMatches.length === 0) {
+    searchLeftCount.textContent = '無結果';
+    searchLeftInput.classList.add('no-match');
+  } else {
+    navigateLeft(0);
+  }
+}
+function navigateLeft(idx: number) {
+  if (!leftMatches.length) return;
+  leftIdx = ((idx % leftMatches.length) + leftMatches.length) % leftMatches.length;
+  const m = leftMatches[leftIdx];
+  sourceArea.focus();
+  sourceArea.setSelectionRange(m.start, m.end);
+  const linesBefore = sourceArea.value.substring(0, m.start).split('\n').length;
+  const lineH = parseInt(getComputedStyle(sourceArea).lineHeight) || 20;
+  sourceArea.scrollTop = Math.max(0, (linesBefore - 4) * lineH);
+  searchLeftCount.textContent = `${leftIdx + 1} / ${leftMatches.length}`;
+}
+searchLeftBtn.addEventListener('click', openSearchLeft);
+searchLeftInput.addEventListener('input', runSearchLeft);
+searchLeftNext.addEventListener('click', () => navigateLeft(leftIdx + 1));
+searchLeftPrev.addEventListener('click', () => navigateLeft(leftIdx - 1));
+searchLeftClose.addEventListener('click', closeSearchLeft);
+searchLeftInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); navigateLeft(e.shiftKey ? leftIdx - 1 : leftIdx + 1); }
+  if (e.key === 'Escape') closeSearchLeft();
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── RIGHT SEARCH (Rich Editor / Preview) ────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+let rightQuillMatches: number[] = [];  // Quill char positions
+let rightQuillLen = 0;
+let rightIdx = -1;
+
+function openSearchRight() {
+  searchRightBar.style.display = 'flex';
+  searchRightInput.focus();
+  searchRightInput.select();
+  doSearchRight();
+}
+function closeSearchRight() {
+  searchRightBar.style.display = 'none';
+  searchRightInput.classList.remove('no-match');
+  searchRightCount.textContent = '';
+  // Clear Quill highlights
+  try { quill.formatText(0, quill.getLength(), 'background', false); } catch (_) {}
+  // Clear preview marks
+  clearPreviewMarks();
+  rightQuillMatches = [];
+  rightIdx = -1;
+}
+function clearPreviewMarks() {
+  try {
+    const doc = preview.contentDocument;
+    if (!doc) return;
+    doc.querySelectorAll('mark.sh').forEach(m => {
+      m.parentNode?.replaceChild(doc.createTextNode(m.textContent || ''), m);
+    });
+    doc.body?.normalize();
+  } catch (_) {}
+}
+function doSearchRight() {
+  const q = searchRightInput.value;
+  rightQuillMatches = [];
+  rightIdx = -1;
+  searchRightInput.classList.remove('no-match');
+
+  if (richMode) {
+    try { quill.formatText(0, quill.getLength(), 'background', false); } catch (_) {}
+    if (!q) { searchRightCount.textContent = ''; return; }
+    rightQuillLen = q.length;
+    const text  = quill.getText().toLowerCase();
+    const ql    = q.toLowerCase();
+    let pos = 0;
+    while ((pos = text.indexOf(ql, pos)) !== -1) {
+      rightQuillMatches.push(pos);
+      quill.formatText(pos, q.length, 'background', '#ffeb3b');
+      pos += q.length;
+    }
+    if (!rightQuillMatches.length) {
+      searchRightCount.textContent = '無結果';
+      searchRightInput.classList.add('no-match');
+    } else {
+      navigateRight(0);
+    }
+  } else {
+    // Preview mode: mark DOM text nodes
+    clearPreviewMarks();
+    if (!q) { searchRightCount.textContent = ''; return; }
+    try {
+      const doc = preview.contentDocument;
+      if (!doc?.body) return;
+      const ql = q.toLowerCase();
+      const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+      const nodes: Text[] = [];
+      let n: Text | null;
+      while ((n = walker.nextNode() as Text | null)) {
+        if (n.textContent?.toLowerCase().includes(ql)) nodes.push(n);
+      }
+      let count = 0;
+      for (const node of nodes) {
+        const text  = node.textContent || '';
+        const lower = text.toLowerCase();
+        const frag  = doc.createDocumentFragment();
+        let last = 0, p = 0;
+        while ((p = lower.indexOf(ql, last)) !== -1) {
+          if (p > last) frag.appendChild(doc.createTextNode(text.slice(last, p)));
+          const mk = doc.createElement('mark');
+          mk.className = 'sh';
+          mk.dataset.idx = String(count++);
+          mk.style.cssText = 'background:#ffeb3b;color:#000;border-radius:2px;';
+          mk.textContent = text.slice(p, p + q.length);
+          frag.appendChild(mk);
+          last = p + q.length;
+        }
+        if (last < text.length) frag.appendChild(doc.createTextNode(text.slice(last)));
+        node.parentNode?.replaceChild(frag, node);
+      }
+      if (count === 0) {
+        searchRightCount.textContent = '無結果';
+        searchRightInput.classList.add('no-match');
+      } else {
+        rightQuillMatches = Array.from({length: count}, (_, i) => i);
+        navigateRight(0);
+      }
+    } catch (_) {}
+  }
+}
+function navigateRight(idx: number) {
+  if (!rightQuillMatches.length) return;
+  rightIdx = ((idx % rightQuillMatches.length) + rightQuillMatches.length) % rightQuillMatches.length;
+
+  if (richMode) {
+    // Reset all to yellow, current to orange
+    rightQuillMatches.forEach(p => quill.formatText(p, rightQuillLen, 'background', '#ffeb3b'));
+    quill.formatText(rightQuillMatches[rightIdx], rightQuillLen, 'background', '#ff9800');
+    quill.setSelection(rightQuillMatches[rightIdx], rightQuillLen);
+  } else {
+    try {
+      const marks = preview.contentDocument?.querySelectorAll('mark.sh');
+      if (!marks) return;
+      marks.forEach((m, i) => {
+        (m as HTMLElement).style.background = i === rightIdx ? '#ff9800' : '#ffeb3b';
+      });
+      (marks[rightIdx] as HTMLElement)?.scrollIntoView({ block: 'center' });
+    } catch (_) {}
+  }
+  searchRightCount.textContent = `${rightIdx + 1} / ${rightQuillMatches.length}`;
+}
+searchRightBtn.addEventListener('click', openSearchRight);
+searchRightInput.addEventListener('input', doSearchRight);
+searchRightNext.addEventListener('click', () => navigateRight(rightIdx + 1));
+searchRightPrev.addEventListener('click', () => navigateRight(rightIdx - 1));
+searchRightClose.addEventListener('click', closeSearchRight);
+searchRightInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); navigateRight(e.shiftKey ? rightIdx - 1 : rightIdx + 1); }
+  if (e.key === 'Escape') closeSearchRight();
+});
+
+// ── Ctrl+F: open search in the relevant panel ─────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    const active = document.activeElement;
+    const inLeft = active === sourceArea || searchLeftBar.contains(active as Node);
+    if (inLeft) openSearchLeft(); else openSearchRight();
+  }
+});
+
+// ── Messages from extension ───────────────────────────────────────────────────
+window.addEventListener('message', (event) => {
+  const msg = event.data;
+  switch (msg.type) {
+    case 'init':       loadHtml(msg.payload.html); break;
+    case 'saved':      isDirty = false; setStatus('✓ 已保存 ' + new Date().toLocaleTimeString(), true); break;
+    case 'saveFailed': setStatus('❌ 保存失败: ' + msg.error, false); break;
+  }
+});
+
+vscode.postMessage({ type: 'ready' });
