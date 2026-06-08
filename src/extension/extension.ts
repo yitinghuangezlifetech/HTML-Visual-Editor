@@ -109,6 +109,8 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
       `script-src 'unsafe-inline' ${webview.cspSource}`,
       `img-src * data: blob: ${webview.cspSource}`,
       `font-src * data: ${webview.cspSource}`,
+      // Preview pane renders user HTML in an <iframe srcdoc>; allow it to load.
+      `frame-src * data: blob:`,
     ].join('; ');
 
     return `<!DOCTYPE html>

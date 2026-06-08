@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLAUDE</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', Roboto, Oxygen, Ubuntu, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 20px;
+      line-height: 1.8;
+      color: #333;
+      background: #fafafa;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 24px;
+      margin-bottom: 12px;
+      font-weight: 600;
+      color: #222;
+    }
+    h1 { font-size: 2em; border-bottom: 2px solid #667eea; padding-bottom: 12px; }
+    h2 { font-size: 1.6em; border-bottom: 1px solid #e0e0e0; padding-bottom: 8px; }
+    h3 { font-size: 1.3em; }
+    h4, h5, h6 { font-size: 1.1em; }
+    p { margin-bottom: 12px; }
+    a { color: #667eea; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code {
+      background: #f5f5f5;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', 'Consolas', monospace;
+      font-size: 0.9em;
+      color: #e83e8c;
+    }
+    pre {
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 16px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    pre code {
+      background: none;
+      padding: 0;
+      color: #333;
+    }
+    blockquote {
+      border-left: 4px solid #667eea;
+      margin: 16px 0;
+      padding-left: 16px;
+      color: #666;
+      font-style: italic;
+    }
+    ul, ol { margin: 12px 0 12px 24px; }
+    li { margin-bottom: 8px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 12px;
+      text-align: left;
+    }
+    th {
+      background: #f8f8f8;
+      font-weight: 600;
+      color: #333;
+    }
+    tr:nth-child(even) {
+      background: #fafafa;
+    }
+    img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 4px;
+      margin: 16px 0;
+    }
+    hr {
+      margin: 24px 0;
+      border: none;
+      border-top: 1px solid #ddd;
+    }
+  </style>
+</head>
+<body>
+<h1>CLAUDE.md</h1>
+<p>This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.</p>
+<h2>⚠️ 對話開始時必須執行</h2>
+<p><strong>每次對話開始，立即依序讀取以下檔案，再回應任何問題：</strong></p>
+<ol>
+<li><code>.kiro/steering/basic.md</code> — 設計哲學、測試標準、執行控管、Docker 與 Windows 指令規範</li>
+<li><code>.kiro/steering/tech.md</code> — 技術棧、建置指令、API 端點</li>
+<li><code>.kiro/steering/structure.md</code> — 專案目錄結構、多租戶設計</li>
+<li><code>.kiro/steering/product.md</code> — 產品功能、系統角色、使用者流程</li>
+</ol>
+<p>以上為 source of truth，所有規範以 <code>.kiro/steering/</code> 為準。</p>
+<hr>
+<h2>⚠️ 新功能開發：Spec-First 強制流程（Strict）</h2>
+<p><strong>收到任何新功能需求，禁止直接寫程式碼。必須依序完成以下三步驟，每步驟必須等待使用者確認後才進行下一步。</strong></p>
+<h3>流程</h3>
+<table>
+<thead>
+<tr>
+<th>步驟</th>
+<th>產出檔案</th>
+<th>中斷點</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Step 1</td>
+<td><code>specs/{feature}/requirements.md</code></td>
+<td>⛔ 等待使用者確認</td>
+</tr>
+<tr>
+<td>Step 2</td>
+<td><code>specs/{feature}/design.md</code></td>
+<td>⛔ 等待使用者確認</td>
+</tr>
+<tr>
+<td>Step 3</td>
+<td><code>specs/{feature}/tasks.md</code></td>
+<td>逐項完成，勾選 <code>[x]</code></td>
+</tr>
+</tbody></table>
+<h3>強制規則</h3>
+<ol>
+<li>❌ <strong>禁止跳步</strong>：未完成 requirements.md 不得建立 design.md，未完成 design.md 不得建立 tasks.md</li>
+<li>❌ <strong>禁止口頭設計</strong>：所有設計必須寫入檔案，禁止在對話中口頭描述而不建檔</li>
+<li>❌ <strong>禁止直接寫程式碼</strong>：未完成三份 spec 文件前，不得建立任何 Controller、Model、Migration、前端元件</li>
+<li>✅ <strong>等待確認</strong>：Step 1 與 Step 2 完成後，必須明確詢問使用者「是否確認？」，收到確認後才進行下一步</li>
+</ol>
+<h3>Spec 資料夾結構</h3>
+<pre><code>specs/
+└── {feature-name}/
+    ├── requirements.md   # Step 1：需求定義
+    ├── design.md         # Step 2：技術設計
+    └── tasks.md          # Step 3：實作任務清單
+</code></pre>
+<h3>文件格式</h3>
+<p><strong><code>requirements.md</code></strong></p>
+<pre><code class="language-markdown"># 需求：{功能名稱}
+
+## 使用者故事
+- 身為 {角色}，我希望 {動作}，以便 {目的}
+
+## 驗收條件
+- [ ] 條件 1
+- [ ] 條件 2
+
+## 範圍外（Out of Scope）
+- 排除項目
+</code></pre>
+<p><strong><code>design.md</code></strong></p>
+<pre><code class="language-markdown"># 技術設計：{功能名稱}
+
+## 資料模型
+- 新增/修改的資料表與欄位
+
+## API 設計
+- Endpoint、Method、Request/Response 結構
+
+## 前端元件
+- 頁面與元件清單
+
+## 影響範圍
+- 修改到的既有檔案
+</code></pre>
+<p><strong><code>tasks.md</code></strong></p>
+<pre><code class="language-markdown"># 實作任務：{功能名稱}
+
+## 任務清單
+- [ ] 1. Migration：建立 xxx 資料表
+- [ ] 2. Model：建立 Xxx Model
+- [ ] 3. Controller：建立 XxxController
+- [ ] 4. API Routes：註冊路由
+- [ ] 5. 前端頁面：建立 XxxPage.tsx
+- [ ] 6. 測試：撰寫 Feature Test
+</code></pre>
+<hr>
+<h2>進行中的功能模組</h2>
+<table>
+<thead>
+<tr>
+<th>模組</th>
+<th>位置</th>
+<th>狀態</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>User Management</strong></td>
+<td><code>specs/user-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Organization Management</strong></td>
+<td><code>specs/organization-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Billing Management</strong></td>
+<td><code>specs/billing-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Module Management</strong></td>
+<td><code>specs/module-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Subscription Management</strong></td>
+<td><code>specs/subscription-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Audit Logging</strong></td>
+<td><code>specs/audit-logging/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Member Management</strong></td>
+<td><code>specs/member-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+<tr>
+<td><strong>Department Management</strong></td>
+<td><code>specs/department-management/</code></td>
+<td>✅ 需求已定義</td>
+</tr>
+</tbody></table>
+<p><strong>下一步</strong>：補充各模組的 <code>design.md</code> 與 <code>tasks.md</code></p>
+<hr>
+<h2>快速參考</h2>
+<h3>開發環境啟動（Docker Compose）</h3>
+<p>所有開發在容器內進行，無需本地安裝 PHP、Node.js、Composer 等。</p>
+<pre><code class="language-bash"># 1. 啟動所有服務
+docker compose up -d
+
+# 2. 查看服務狀態
+docker compose ps
+
+# 3. 查看服務日誌
+docker compose logs -f laravel        # 後端 API
+docker compose logs -f react-admin     # 系統管理後台
+docker compose logs -f react-frontend  # 企業用戶應用
+docker compose logs -f mysql           # 資料庫
+</code></pre>
+<h3>後端 API（Laravel）</h3>
+<pre><code class="language-bash"># 在容器內執行
+docker compose exec laravel composer install      # 安裝依賴
+docker compose exec laravel php artisan migrate   # 執行遷移
+docker compose exec laravel php artisan test      # 執行測試
+docker compose exec laravel php artisan test tests/Feature/Admin/OrganizationControllerTest.php  # 特定測試
+docker compose exec laravel php artisan cache:clear &amp;&amp; php artisan config:clear  # 清除快取
+
+# API 訪問
+curl http://localhost:8000/api/admin
+curl http://localhost:8000/api/org
+</code></pre>
+<h3>前端 - 系統 OWNER 管理後台（React Admin）</h3>
+<pre><code class="language-bash"># 在容器內執行
+docker compose exec react-admin npm install       # 安裝依賴
+docker compose exec react-admin npm run dev       # 開發伺服器
+docker compose exec react-admin npm run build     # 編譯打包
+docker compose exec react-admin npm run test:unit # 執行單元測試
+docker compose exec react-admin npm run type-check  # 型別檢查
+docker compose exec react-admin npm run lint      # 程式碼檢查
+docker compose exec react-admin npm run format    # 程式碼格式化
+
+# 訪問應用
+open http://localhost:5173
+</code></pre>
+<h3>前端 - 企業用戶應用（React Frontend）</h3>
+<pre><code class="language-bash"># 在容器內執行
+docker compose exec react-frontend npm install       # 安裝依賴
+docker compose exec react-frontend npm run dev       # 開發伺服器
+docker compose exec react-frontend npm run build     # 編譯打包
+docker compose exec react-frontend npm run test:unit # 執行單元測試
+docker compose exec react-frontend npm run type-check  # 型別檢查
+docker compose exec react-frontend npm run lint      # 程式碼檢查
+docker compose exec react-frontend npm run format    # 程式碼格式化
+
+# 訪問應用
+open http://localhost:5174
+</code></pre>
+<h3>資料庫（MySQL）</h3>
+<pre><code class="language-bash"># 在 MySQL 容器內執行
+docker compose exec mysql mysql -u ezsport -pezsport ezsport
+
+# 常用指令
+SHOW TABLES;
+DESCRIBE organizations;
+SELECT * FROM organizations;
+</code></pre>
+<h3>容器操作</h3>
+<pre><code class="language-bash"># 停止所有服務（保留資料）
+docker compose stop
+
+# 重啟單一服務
+docker compose restart laravel
+docker compose restart react-admin
+docker compose restart react-frontend
+
+# 查看容器資源使用
+docker compose stats
+
+# 清理（⚠️ 謹慎使用，會刪除容器但保留 volumes）
+docker compose down
+</code></pre>
+<blockquote>
+<p>⚠️ <strong>禁止操作</strong>：<code>docker compose down</code> 除非必須重建環境且已獲同意。詳見 <code>.kiro/steering/basic.md</code> Section 4.2。</p>
+</blockquote>
+<hr>
+<h2>注意事項</h2>
+<h3>檔案用途</h3>
+<ul>
+<li>本檔案用於 <strong>Claude Code</strong>（claude.ai/code）的開發指導</li>
+<li>Kiro IDE 使用 <code>.kiro/steering/</code> 目錄下的 steering 檔案（Kiro 有內建 Spec 機制）</li>
+<li>兩個開發環境共用 <code>.kiro/steering/</code> 作為 <strong>source of truth</strong></li>
+</ul>
+<h3>開發環境</h3>
+<ul>
+<li><strong>開發環境</strong>：Docker Compose（推薦）</li>
+<li><strong>本地開發</strong>：不需要本地安裝 PHP、Node.js、Composer、npm 等工具</li>
+<li><strong>所有指令</strong>：在容器內執行，使用 <code>docker compose exec</code> 前綴</li>
+</ul>
+<h3>規範與約束</h3>
+<ul>
+<li>遵循 <code>.kiro/steering/basic.md</code> 的設計哲學、測試標準、執行控管</li>
+<li>遵循 <code>.kiro/steering/tech.md</code> 的技術棧與 API 設計規範</li>
+<li>禁止行為詳見 <code>.kiro/steering/basic.md</code> Section 3-4</li>
+</ul>
+<h3>進度同步</h3>
+<ul>
+<li>完成 Spec 文件時，必須更新 <code>.kiro/steering/dash.md</code></li>
+<li>完成 API 端點時，必須更新 <code>.kiro/steering/tech.md</code> 的「主要 API 端點」區塊</li>
+<li>詳見 <code>.kiro/steering/basic.md</code> Section 4.3</li>
+</ul>
+
+</body>
+</html>
