@@ -32,11 +32,10 @@
 
 ## Spec 文件狀態（specs/）
 
-> Spec-First 流程的新功能文件。目前尚無進行中的 `specs/{feature}/` 模組。
-
 | 模組 | 位置 | requirements | design | tasks |
 |------|------|:---:|:---:|:---:|
-| —（尚無） | — | — | — | — |
+| panel-layout    | `specs/panel-layout/`    | ✅ | ✅ | ✅ |
+| file-attachment | `specs/file-attachment/` | ✅ | ✅ | ✅ |
 
 ---
 
@@ -61,6 +60,9 @@
 | Phase 3 | 2026-06-05 | Kiro 整合、測試、Quill 富文字編輯器 |
 | 維護 | 2026-06-07 | 排除 webview 顯示問題、還原至 Quill 架構、加入 .md 同步 |
 | steering 建立 | 2026-06-08 | 依 CLAUDE.md 規範建立 `.kiro/steering/` 五份文件 |
+| v0.1.1 | 2026-06-11 | 面板 30/70 配置、檔案附加、圖片顯示與調整、測試框架 |
+| v0.1.2 | 2026-06-13 | source↔Quill 雙向即時同步、Quill 表格編輯功能 |
+| v0.1.3 | 2026-06-15 | 表格尺寸改為編輯器內嵌彈窗（避開 webview prompt 限制） |
 
 ---
 

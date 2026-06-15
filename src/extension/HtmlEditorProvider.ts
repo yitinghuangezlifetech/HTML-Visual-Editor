@@ -173,25 +173,66 @@ export class HtmlEditorProvider implements vscode.CustomTextEditorProvider {
     .toolbar button:hover {
       background: #005a9e;
     }
-    .editor-container {
+    #split {
       flex: 1;
       display: flex;
-      gap: 1px;
+      overflow: hidden;
+    }
+    #panelLeft {
+      flex: 0 0 30%;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
       background: #1e1e1e;
+    }
+    #panelLeft.collapsed {
+      flex: 0 0 0% !important;
+      overflow: hidden;
+    }
+    #panelLeft.collapsed #sourceArea {
+      display: none;
+    }
+    #resizer {
+      width: 4px;
+      background: #3e3e42;
+      cursor: col-resize;
+      flex-shrink: 0;
+      transition: background 0.1s;
+    }
+    #resizer:hover, #resizer.dragging {
+      background: #007acc;
+    }
+    #panelLeft.collapsed + #resizer {
+      display: none;
     }
     .canvas-wrapper {
       flex: 1;
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      min-width: 0;
     }
-    .canvas-label {
+    .panel-label {
       padding: 4px 12px;
       background: #2d2d30;
       border-bottom: 1px solid #3e3e42;
       font-size: 12px;
       color: #858585;
+      flex-shrink: 0;
+    }
+    #sourceArea {
+      flex: 1;
+      width: 100%;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border: none;
+      resize: none;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      padding: 8px;
+      outline: none;
+      overflow: auto;
     }
     .canvas-frame {
       flex: 1;
@@ -204,36 +245,6 @@ export class HtmlEditorProvider implements vscode.CustomTextEditorProvider {
       border: none;
       background: white;
     }
-    .sidebar {
-      width: 300px;
-      background: #252526;
-      border-left: 1px solid #3e3e42;
-      display: flex;
-      flex-direction: column;
-    }
-    .sidebar-tabs {
-      display: flex;
-      border-bottom: 1px solid #3e3e42;
-    }
-    .sidebar-tabs button {
-      flex: 1;
-      padding: 8px;
-      background: transparent;
-      border: none;
-      color: #858585;
-      cursor: pointer;
-      font-size: 12px;
-      border-bottom: 2px solid transparent;
-    }
-    .sidebar-tabs button.active {
-      color: #e0e0e0;
-      border-bottom-color: #007acc;
-    }
-    .sidebar-content {
-      flex: 1;
-      overflow: auto;
-      padding: 8px;
-    }
     .error {
       padding: 12px;
       background: #5a1d1d;
@@ -241,6 +252,13 @@ export class HtmlEditorProvider implements vscode.CustomTextEditorProvider {
       border-radius: 2px;
       font-size: 12px;
       margin: 12px;
+    }
+    #toggleSourceBtn {
+      background: #3e3e42 !important;
+      color: #d4d4d4 !important;
+    }
+    #toggleSourceBtn:hover {
+      background: #505050 !important;
     }
   </style>
 </head>
@@ -251,50 +269,78 @@ export class HtmlEditorProvider implements vscode.CustomTextEditorProvider {
       <button id="saveBtn" title="Save (Ctrl+S)">Save</button>
       <button id="undoBtn" title="Undo (Ctrl+Z)">Undo</button>
       <button id="redoBtn" title="Redo (Ctrl+Y)">Redo</button>
+      <button id="toggleSourceBtn" title="收闔/展開原始碼">◀ 收闔原始碼</button>
     </div>
-    <div class="editor-container">
+    <div id="split">
+      <div id="panelLeft">
+        <div class="panel-label">原始碼</div>
+        <textarea id="sourceArea" spellcheck="false"></textarea>
+      </div>
+      <div id="resizer"></div>
       <div class="canvas-wrapper">
-        <div class="canvas-label">Canvas Preview</div>
+        <div class="panel-label">Canvas Preview</div>
         <div class="canvas-frame">
           <iframe id="canvas"></iframe>
-        </div>
-      </div>
-      <div class="sidebar">
-        <div class="sidebar-tabs">
-          <button class="active">Properties</button>
-        </div>
-        <div class="sidebar-content">
-          <p style="font-size: 12px; color: #858585;">Select an element to edit</p>
         </div>
       </div>
     </div>
   </div>
 
   <script nonce="${nonce}">
-    console.log('🔧 WebView Script Starting...');
+    (function () {
+      const panelLeft      = document.getElementById('panelLeft');
+      const resizer        = document.getElementById('resizer');
+      const splitEl        = document.getElementById('split');
+      const toggleBtn      = document.getElementById('toggleSourceBtn');
+      const canvasIframe   = document.getElementById('canvas');
 
-    // Test 1: Check acquireVsCodeApi
-    try {
-      const vscode = acquireVsCodeApi();
-      console.log('✓ acquireVsCodeApi works');
-    } catch (e) {
-      console.error('✗ acquireVsCodeApi failed:', e);
-    }
+      let isCollapsed = false;
+      let lastWidth   = '30%';
 
-    // Test 2: Check canvas
-    const canvas = document.getElementById('canvas');
-    console.log('✓ Canvas element:', canvas ? 'FOUND' : 'NOT FOUND');
+      // ── Toggle collapse ──────────────────────────────────────────────────────
+      toggleBtn.addEventListener('click', function () {
+        if (!isCollapsed) {
+          lastWidth = panelLeft.style.flexBasis || '30%';
+          panelLeft.classList.add('collapsed');
+          toggleBtn.textContent = '▶ 展開原始碼';
+          isCollapsed = true;
+        } else {
+          panelLeft.classList.remove('collapsed');
+          panelLeft.style.flex = '0 0 ' + lastWidth;
+          toggleBtn.textContent = '◀ 收闔原始碼';
+          isCollapsed = false;
+        }
+      });
 
-    // Test 3: Initialize editor
-    window.addEventListener('load', () => {
-      console.log('✓ Window load event fired');
-    });
+      // ── Drag-to-resize ───────────────────────────────────────────────────────
+      let dragging = false, dragStartX = 0, dragStartW = 0;
 
-    document.addEventListener('DOMContentLoaded', () => {
-      console.log('✓ DOMContentLoaded fired');
-    });
+      resizer.addEventListener('mousedown', function (e) {
+        dragging    = true;
+        dragStartX  = e.clientX;
+        dragStartW  = panelLeft.getBoundingClientRect().width;
+        resizer.classList.add('dragging');
+        document.body.style.cursor     = 'col-resize';
+        document.body.style.userSelect = 'none';
+        canvasIframe.style.pointerEvents = 'none';
+      });
 
-    console.log('🎯 WebView Script Ready');
+      document.addEventListener('mousemove', function (e) {
+        if (!dragging) return;
+        const total = splitEl.getBoundingClientRect().width;
+        const pct   = Math.min(80, Math.max(10, ((dragStartW + e.clientX - dragStartX) / total) * 100));
+        panelLeft.style.flex = '0 0 ' + pct.toFixed(1) + '%';
+      });
+
+      document.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove('dragging');
+        document.body.style.cursor       = '';
+        document.body.style.userSelect   = '';
+        canvasIframe.style.pointerEvents = '';
+      });
+    })();
   </script>
 
   <script nonce="${nonce}" src="${bundleUri}"></script>

@@ -17,6 +17,20 @@ Link.sanitize = (url: string) => {
   return _sanitize(url);
 };
 
+// ── Allow relative URLs in Quill images ──────────────────────────────────────
+// Quill's Image blot sanitizes src and replaces relative paths with `//:0`.
+// Allow relative/local paths (no ://) and special URLs (data:, anchors).
+const ImageBlot = Quill.import('formats/image') as any;
+const _imgSanitize = ImageBlot.sanitize.bind(ImageBlot);
+ImageBlot.sanitize = (url: string) => {
+  // Allow: empty, data URIs, anchors, or relative/local paths (no ://)
+  if (!url || url.startsWith('data:') || url.startsWith('#') || !url.includes('://')) {
+    return url;
+  }
+  // For external URLs with protocol, use original sanitizer
+  return _imgSanitize(url);
+};
+
 const vscode = acquireVsCodeApi();
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
@@ -28,17 +42,33 @@ const editorWrap     = document.getElementById('editorWrap')!;
 const rightLabel     = document.getElementById('rightLabel')!;
 const btnRich        = document.getElementById('btnRich')!;
 const btnPreview     = document.getElementById('btnPreview')!;
+// Table controls
+const tableBar       = document.getElementById('tableBar')!;
+const tblInsert      = document.getElementById('tblInsert')!;
+const tblRowAbove    = document.getElementById('tblRowAbove')!;
+const tblRowBelow    = document.getElementById('tblRowBelow')!;
+const tblColLeft     = document.getElementById('tblColLeft')!;
+const tblColRight    = document.getElementById('tblColRight')!;
+const tblDelRow      = document.getElementById('tblDelRow')!;
+const tblDelCol      = document.getElementById('tblDelCol')!;
+const tblDelTable    = document.getElementById('tblDelTable')!;
+const tablePopover   = document.getElementById('tablePopover')!;
+const tblRowsInput   = document.getElementById('tblRows') as HTMLInputElement;
+const tblColsInput   = document.getElementById('tblCols') as HTMLInputElement;
+const tblConfirm     = document.getElementById('tblConfirm')!;
+const tblCancel      = document.getElementById('tblCancel')!;
 // Font zoom
 const zoomInBtn      = document.getElementById('zoomIn')!;
 const zoomOutBtn     = document.getElementById('zoomOut')!;
 const zoomLabel      = document.getElementById('zoomLabel')!;
 // Panel-width presets
-const panelLeft      = document.getElementById('panelLeft')! as HTMLElement;
-const resizer        = document.getElementById('resizer')! as HTMLElement;
-const splitEl        = document.getElementById('split')! as HTMLElement;
-const winNarrow      = document.getElementById('winNarrow')!;
-const winHalf        = document.getElementById('winHalf')!;
-const winWide        = document.getElementById('winWide')!;
+const panelLeft        = document.getElementById('panelLeft')! as HTMLElement;
+const resizer          = document.getElementById('resizer')! as HTMLElement;
+const splitEl          = document.getElementById('split')! as HTMLElement;
+const winNarrow        = document.getElementById('winNarrow')!;
+const winHalf          = document.getElementById('winHalf')!;
+const winWide          = document.getElementById('winWide')!;
+const toggleSourceBtn  = document.getElementById('toggleSourceBtn') as HTMLButtonElement | null;
 // Left search
 const searchLeftBar   = document.getElementById('searchLeft')!;
 const searchLeftInput = document.getElementById('searchLeftInput') as HTMLInputElement;
@@ -60,6 +90,8 @@ const searchRightBtn   = document.getElementById('searchRightBtn')!;
 let richMode   = true;   // Rich Editor is the default right-panel view
 let isDirty    = false;
 let previewTimer: ReturnType<typeof setTimeout> | null = null;
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
+let syncing    = false;  // Guard against source ↔ Quill update feedback loop
 let fontSize   = 13;
 
 // ── Quill ─────────────────────────────────────────────────────────────────────
@@ -67,23 +99,152 @@ const quill = new Quill('#editor', {
   theme: 'snow',
   placeholder: '開始輸入內容...',
   modules: {
-    toolbar: [
-      [{ header: [1, 2, 3, 4, 5, 6, false] }],
-      [{ font: [] }],
-      [{ size: ['small', false, 'large', 'huge'] }],
-      ['bold', 'italic', 'underline', 'strike'],
-      [{ color: [] }, { background: [] }],
-      [{ script: 'sub' }, { script: 'super' }],
-      [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
-      [{ indent: '-1' }, { indent: '+1' }],
-      [{ align: [] }],
-      ['blockquote', 'code-block'],
-      ['link', 'image', 'video'],
-      ['clean'],
-    ],
+    toolbar: {
+      container: [
+        [{ header: [1, 2, 3, 4, 5, 6, false] }],
+        [{ font: [] }],
+        [{ size: ['small', false, 'large', 'huge'] }],
+        ['bold', 'italic', 'underline', 'strike'],
+        [{ color: [] }, { background: [] }],
+        [{ script: 'sub' }, { script: 'super' }],
+        [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
+        [{ indent: '-1' }, { indent: '+1' }],
+        [{ align: [] }],
+        ['blockquote', 'code-block'],
+        ['link', 'image', 'video'],
+        ['clean'],
+      ],
+      handlers: {
+        image: () => {
+          vscode.postMessage({ type: 'attachFile', context: 'image' });
+          setStatus('⏳ 選擇圖片中...');
+        },
+      },
+    },
     history: { delay: 1000, maxStack: 500, userOnly: true },
+    table: true,  // Enable Quill's built-in table module
   },
 });
+
+const tableModule = quill.getModule('table') as any;
+
+// ── Image resize on double-click ──────────────────────────────────────────────
+let resizeTargetImg: HTMLImageElement | null = null;
+quill.root.addEventListener('dblclick', (e: Event) => {
+  const img = (e.target as Element | null)?.closest('img') as HTMLImageElement | null;
+  if (!img) return;
+  resizeTargetImg = img;
+  const currentWidth = img.style.width || img.getAttribute('width') || '';
+  // VS Code webviews block native prompt(); ask the host for an input box.
+  vscode.postMessage({
+    type: 'inputBox',
+    payload: {
+      purpose: 'imageWidth',
+      value: currentWidth,
+      prompt: '設定圖片寬度（如 400 表示 400px，留空恢復原始大小）',
+      placeHolder: '400 或 50%',
+    },
+  });
+});
+
+function applyImageWidth(width: string) {
+  if (!resizeTargetImg) return;
+  if (width.trim()) {
+    const val = width.trim();
+    resizeTargetImg.style.width = val.includes('px') || val.includes('%') ? val : `${val}px`;
+    resizeTargetImg.style.height = 'auto';
+  } else {
+    resizeTargetImg.style.width = '';
+    resizeTargetImg.style.height = '';
+  }
+  // Sync the change back to source/preview
+  syncing = true;
+  sourceArea.value = getRichHtml();
+  syncing = false;
+  schedulePreview();
+  isDirty = true;
+  setStatus('● 未保存');
+  resizeTargetImg = null;
+}
+
+// ── Table editing ─────────────────────────────────────────────────────────────
+// Quill's table methods bail out when getSelection() is null. Opening a prompt()
+// blurs the editor and clears the selection, so we track the last known caret
+// position and restore it (with focus) before running any table operation.
+let lastRange: { index: number; length: number } | null = null;
+quill.on('selection-change', (range) => {
+  if (range) lastRange = range;
+});
+
+// Restore a valid selection. `fallbackToEnd` is used by insertTable so a table
+// can be added even when the editor was never clicked.
+function restoreSelection(fallbackToEnd: boolean): boolean {
+  let range = quill.getSelection() || lastRange;
+  if (range == null && fallbackToEnd) {
+    range = { index: Math.max(0, quill.getLength() - 1), length: 0 };
+  }
+  if (range == null) return false;
+  quill.focus();
+  quill.setSelection(range.index, range.length, 'silent');
+  return true;
+}
+
+function tableOp(fn: () => void, fallbackToEnd: boolean) {
+  if (!restoreSelection(fallbackToEnd)) {
+    setStatus('⚠ 請先將游標移入表格儲存格');
+    return;
+  }
+  try {
+    fn();
+  } catch (err) {
+    setStatus('⚠ 表格操作失敗，請將游標移入儲存格');
+    return;
+  }
+  // Sync the resulting table HTML back to source/preview
+  syncing = true;
+  sourceArea.value = getRichHtml();
+  syncing = false;
+  schedulePreview();
+  isDirty = true;
+  setStatus('● 未保存');
+}
+
+// Show an inline popover inside the editor (VS Code webviews block prompt()).
+tblInsert.addEventListener('click', () => {
+  // Capture caret before the popover takes focus.
+  const preRange = quill.getSelection() || lastRange;
+  if (preRange) lastRange = preRange;
+  const showing = tablePopover.classList.toggle('show');
+  if (showing) { tblRowsInput.focus(); tblRowsInput.select(); }
+});
+
+function closeTablePopover() {
+  tablePopover.classList.remove('show');
+}
+
+function confirmInsertTable() {
+  const rows = Math.min(20, Math.max(1, parseInt(tblRowsInput.value, 10) || 3));
+  const cols = Math.min(20, Math.max(1, parseInt(tblColsInput.value, 10) || 3));
+  closeTablePopover();
+  tableOp(() => tableModule.insertTable(rows, cols), true);
+}
+
+tblConfirm.addEventListener('click', confirmInsertTable);
+tblCancel.addEventListener('click', closeTablePopover);
+[tblRowsInput, tblColsInput].forEach((el) => {
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); confirmInsertTable(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeTablePopover(); }
+  });
+});
+
+tblRowAbove.addEventListener('click', () => tableOp(() => tableModule.insertRowAbove(), false));
+tblRowBelow.addEventListener('click', () => tableOp(() => tableModule.insertRowBelow(), false));
+tblColLeft.addEventListener('click',  () => tableOp(() => tableModule.insertColumnLeft(), false));
+tblColRight.addEventListener('click', () => tableOp(() => tableModule.insertColumnRight(), false));
+tblDelRow.addEventListener('click',   () => tableOp(() => tableModule.deleteRow(), false));
+tblDelCol.addEventListener('click',   () => tableOp(() => tableModule.deleteColumn(), false));
+tblDelTable.addEventListener('click', () => tableOp(() => tableModule.deleteTable(), false));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function setStatus(msg: string, ok?: boolean) {
@@ -136,7 +297,10 @@ function schedulePreview() {
 function refreshPreview() {
   const raw = sourceArea.value;
   const full = /^\s*<!DOCTYPE/i.test(raw) || /^\s*<html/i.test(raw);
-  preview.srcdoc = full ? raw : wrapHtml(raw);
+  const html = full ? raw : wrapHtml(raw);
+
+  // Convert relative image paths to webview URIs for preview display
+  vscode.postMessage({ type: 'convertImagePaths', payload: { html } });
 }
 
 preview.addEventListener('load', () => {
@@ -168,16 +332,20 @@ function setRichMode(rich: boolean) {
   if (rich) {
     editorWrap.style.display = 'flex';
     preview.style.display    = 'none';
+    tableBar.style.display   = 'flex';
     rightLabel.textContent   = 'Rich Text Editor';
     btnRich.classList.add('active');
     btnPreview.classList.remove('active');
     // Sync source → Quill
+    syncing = true;
     const bodyMatch = sourceArea.value.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     const inner = bodyMatch ? bodyMatch[1].trim() : sourceArea.value;
     quill.clipboard.dangerouslyPasteHTML(inner);
+    syncing = false;
   } else {
     editorWrap.style.display = 'none';
     preview.style.display    = 'block';
+    tableBar.style.display   = 'none';
     rightLabel.textContent   = 'Live Preview';
     btnRich.classList.remove('active');
     btnPreview.classList.add('active');
@@ -210,6 +378,26 @@ winNarrow.addEventListener('click', () => setPanelWidth(30));
 winHalf.addEventListener('click',   () => setPanelWidth(50));
 winWide.addEventListener('click',   () => setPanelWidth(70));
 
+// ── Toggle source panel collapse ──────────────────────────────────────────────
+let sourceCollapsed = false;
+let lastSourceWidth = '30%';
+
+if (toggleSourceBtn) {
+  toggleSourceBtn.addEventListener('click', () => {
+    if (!sourceCollapsed) {
+      lastSourceWidth = panelLeft.style.flexBasis || panelLeft.style.flex.split(' ')[2] || '30%';
+      panelLeft.classList.add('collapsed');
+      toggleSourceBtn.textContent = '▶ 展開原始碼';
+      sourceCollapsed = true;
+    } else {
+      panelLeft.classList.remove('collapsed');
+      panelLeft.style.flex = `0 0 ${lastSourceWidth}`;
+      toggleSourceBtn.textContent = '◀ 收闔原始碼';
+      sourceCollapsed = false;
+    }
+  });
+}
+
 // ── Drag-to-resize ────────────────────────────────────────────────────────────
 let dragging = false, dragStartX = 0, dragStartWidth = 0;
 resizer.addEventListener('mousedown', (e) => {
@@ -240,7 +428,26 @@ document.addEventListener('mouseup', () => {
 sourceArea.addEventListener('input', () => {
   if (!isDirty) { isDirty = true; setStatus('● 未保存'); }
   schedulePreview();
+  scheduleSourceToQuill();
 });
+
+// Sync source → Quill (debounced) so editing HTML updates the rich editor live.
+function scheduleSourceToQuill() {
+  if (!richMode || syncing) return;
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => {
+    syncing = true;
+    const sel = quill.getSelection();
+    const bodyMatch = sourceArea.value.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    const inner = bodyMatch ? bodyMatch[1].trim() : sourceArea.value;
+    quill.clipboard.dangerouslyPasteHTML(inner);
+    if (sel) {
+      const len = quill.getLength();
+      quill.setSelection(Math.min(sel.index, len - 1), 0, 'silent');
+    }
+    syncing = false;
+  }, 300);
+}
 sourceArea.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
@@ -252,8 +459,11 @@ sourceArea.addEventListener('keydown', (e) => {
 });
 quill.on('text-change', () => {
   if (!richMode) return;
+  if (syncing) return;  // Skip when the change originates from a source → Quill sync
   if (!isDirty) { isDirty = true; setStatus('● 未保存'); }
+  syncing = true;
   sourceArea.value = getRichHtml();
+  syncing = false;
   schedulePreview();
 });
 
@@ -263,6 +473,24 @@ function save() {
   setStatus('⏳ 保存中...');
 }
 saveBtn.addEventListener('click', save);
+
+// ── File attachment ───────────────────────────────────────────────────────────
+function insertAttachment(payload: { htmlFragment: string; filename: string; relPath: string; mode?: string }) {
+  if (payload.mode === 'image') {
+    // For images: request webview URI from Extension Host so Quill/preview can display them.
+    // sourceArea keeps relative path (for saving), Quill uses webview URI (for display).
+    vscode.postMessage({ type: 'resolveImage', payload: { relPath: payload.relPath } });
+  } else {
+    // Non-image: insert HTML fragment at the textarea cursor.
+    const pos    = sourceArea.selectionStart ?? sourceArea.value.length;
+    const before = sourceArea.value.slice(0, pos);
+    const after  = sourceArea.value.slice(pos);
+    sourceArea.value = before + '\n' + payload.htmlFragment + '\n' + after;
+    schedulePreview();
+    isDirty = true;
+    setStatus(`📎 已附加 ${payload.filename}`);
+  }
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // ── LEFT SEARCH (Source Code textarea) ──────────────────────────────────────
@@ -472,10 +700,53 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('message', (event) => {
   const msg = event.data;
   switch (msg.type) {
-    case 'init':       loadHtml(msg.payload.html); break;
-    case 'saved':      isDirty = false; setStatus('✓ 已保存 ' + new Date().toLocaleTimeString(), true); break;
-    case 'saveFailed': setStatus('❌ 保存失败: ' + msg.error, false); break;
+    case 'init':         loadHtml(msg.payload.html); break;
+    case 'saved':        isDirty = false; setStatus('✓ 已保存 ' + new Date().toLocaleTimeString(), true); break;
+    case 'saveFailed':   setStatus('❌ 保存失败: ' + msg.error, false); break;
+    case 'fileAttached': insertAttachment(msg.payload); break;
+    case 'attachError':  setStatus('❌ ' + msg.error); break;
+    case 'inputBoxResult': {
+      const { purpose, value } = msg.payload || {};
+      if (value == null) break;  // user cancelled
+      if (purpose === 'imageWidth') applyImageWidth(value);
+      break;
+    }
+    case 'imageResolved': {
+      const { relPath, webviewUri } = msg.payload;
+      // Insert image into Quill at current cursor with webview URI (for display)
+      if (richMode) {
+        const range = quill.getSelection(true) || { index: quill.getLength() };
+        quill.insertEmbed(range.index, 'image', webviewUri, 'user');
+        quill.setSelection(range.index + 1, 0, 'silent');
+      }
+      // Also insert relative path into sourceArea (for saving)
+      const pos    = sourceArea.selectionStart ?? sourceArea.value.length;
+      const before = sourceArea.value.slice(0, pos);
+      const after  = sourceArea.value.slice(pos);
+      sourceArea.value = before + `\n<img src="${relPath}" alt="${relPath}">` + after;
+      schedulePreview();
+      isDirty = true;
+      setStatus(`📎 已附加圖片`);
+      break;
+    }
+    case 'imageResolveFailed':
+      setStatus(`❌ 圖片路徑解析失敗: ${msg.payload?.relPath}`);
+      break;
+    case 'imagePathsConverted':
+      // Set preview with webview URI'd image paths
+      preview.srcdoc = msg.payload?.html || '';
+      break;
+    case 'convertImagePathsFailed':
+      console.error('Failed to convert image paths:', msg.payload?.error);
+      // Fallback to original HTML without converted paths
+      const raw = sourceArea.value;
+      const full = /^\s*<!DOCTYPE/i.test(raw) || /^\s*<html/i.test(raw);
+      preview.srcdoc = full ? raw : wrapHtml(raw);
+      break;
   }
 });
+
+// ── Initialize panel layout on startup ────────────────────────────────────────
+setPanelWidth(30);  // Set default: 30% source code, 70% editor/preview
 
 vscode.postMessage({ type: 'ready' });
