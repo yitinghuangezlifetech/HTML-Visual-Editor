@@ -290,7 +290,8 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
     .win-btn.active { background: #6c4fb3; color: #fff; border-color: #6c4fb3; }
     .win-sep { width: 1px; height: 12px; background: #444; margin: 0 2px; }
 
-    .search-bar { display: none; align-items: center; gap: 4px; padding: 4px 10px; background: #1e1e1e; border-bottom: 1px solid #3e3e42; flex-shrink: 0; }
+    .search-bar { display: none; flex-direction: column; gap: 4px; padding: 4px 10px; background: #1e1e1e; border-bottom: 1px solid #3e3e42; flex-shrink: 0; }
+    .search-row { display: flex; align-items: center; gap: 4px; }
     .search-bar input { flex: 1; background: #3c3c3c; border: 1px solid #555; border-radius: 3px; color: #d4d4d4; font-size: 12px; padding: 3px 8px; outline: none; min-width: 0; }
     .search-bar input:focus { border-color: #007acc; }
     .search-bar input.no-match { border-color: #f48771; background: #4a2020; }
@@ -365,11 +366,18 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
         <button class="win-btn" id="winWide"   title="左側佔 70%">70 ▶</button>
       </div>
       <div class="search-bar" id="searchLeft">
-        <input type="text" id="searchLeftInput" placeholder="搜尋原始碼...">
-        <span class="match-count" id="searchLeftCount"></span>
-        <button class="s-btn" id="searchLeftPrev" title="上一個">↑</button>
-        <button class="s-btn" id="searchLeftNext" title="下一個">↓</button>
-        <button class="s-btn close-btn" id="searchLeftClose" title="關閉">✕</button>
+        <div class="search-row">
+          <input type="text" id="searchLeftInput" placeholder="搜尋原始碼...">
+          <span class="match-count" id="searchLeftCount"></span>
+          <button class="s-btn" id="searchLeftPrev" title="上一個">↑</button>
+          <button class="s-btn" id="searchLeftNext" title="下一個">↓</button>
+          <button class="s-btn close-btn" id="searchLeftClose" title="關閉">✕</button>
+        </div>
+        <div class="search-row">
+          <input type="text" id="searchLeftReplace" placeholder="取代為...">
+          <button class="s-btn" id="searchLeftReplaceOne" title="取代本筆 (Ctrl+Alt+1)">替</button>
+          <button class="s-btn" id="searchLeftReplaceAll" title="取代全部 (Ctrl+Alt+A)">替All</button>
+        </div>
       </div>
       <textarea id="sourceArea" spellcheck="false"></textarea>
     </div>

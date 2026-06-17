@@ -36,6 +36,7 @@
 |------|------|:---:|:---:|:---:|
 | panel-layout    | `specs/panel-layout/`    | ✅ | ✅ | ✅ |
 | file-attachment | `specs/file-attachment/` | ✅ | ✅ | ✅ |
+| search-replace  | `specs/search-replace/`  | ✅ | ✅ | ✅ |
 
 ---
 
@@ -63,10 +64,12 @@
 | v0.1.1 | 2026-06-11 | 面板 30/70 配置、檔案附加、圖片顯示與調整、測試框架 |
 | v0.1.2 | 2026-06-13 | source↔Quill 雙向即時同步、Quill 表格編輯功能 |
 | v0.1.3 | 2026-06-15 | 表格尺寸改為編輯器內嵌彈窗（避開 webview prompt 限制） |
+| search-replace | 2026-06-17 | HTML 搜尋區塊添加取代功能（替本筆、替All）、自動同步 |
 
 ---
 
 ## 下一步
 
-1. 補充 Phase 2（視覺選取）的 `specs/{feature}/requirements.md`，啟動 Spec-First 流程。
-2. 整併進入點：確認 `extension.ts` vs `extension-simple.ts`、`main.ts` vs `simple-main.ts` 的正式版本。
+1. ✅ **search-replace 已完成**（2026-06-17）：搜尋區塊取代功能
+2. 補充 Phase 2（視覺選取）的 `specs/{feature}/requirements.md`，啟動 Spec-First 流程。
+3. 整併進入點：確認 `extension.ts` vs `extension-simple.ts`、`main.ts` vs `simple-main.ts` 的正式版本。

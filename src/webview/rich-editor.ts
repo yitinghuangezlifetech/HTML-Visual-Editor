@@ -77,6 +77,10 @@ const searchLeftPrev  = document.getElementById('searchLeftPrev')!;
 const searchLeftNext  = document.getElementById('searchLeftNext')!;
 const searchLeftClose = document.getElementById('searchLeftClose')!;
 const searchLeftBtn   = document.getElementById('searchLeftBtn')!;
+// Left replace
+const searchLeftReplace     = document.getElementById('searchLeftReplace') as HTMLInputElement;
+const searchLeftReplaceOne  = document.getElementById('searchLeftReplaceOne')!;
+const searchLeftReplaceAll  = document.getElementById('searchLeftReplaceAll')!;
 // Right search
 const searchRightBar   = document.getElementById('searchRight')!;
 const searchRightInput = document.getElementById('searchRightInput') as HTMLInputElement;
@@ -543,6 +547,52 @@ function navigateLeft(idx: number) {
   sourceArea.scrollTop = Math.max(0, (linesBefore - 4) * lineH);
   searchLeftCount.textContent = `${leftIdx + 1} / ${leftMatches.length}`;
 }
+
+function replaceLeftOne() {
+  const q = searchLeftInput.value;
+  const r = searchLeftReplace.value;
+  if (!q || leftMatches.length === 0 || leftIdx < 0) return;
+  const m = leftMatches[leftIdx];
+  const before = sourceArea.value.substring(0, m.start);
+  const after  = sourceArea.value.substring(m.end);
+  sourceArea.value = before + r + after;
+  if (!isDirty) { isDirty = true; setStatus('● 未保存'); }
+  const offset = r.length - q.length;
+  for (let i = leftIdx + 1; i < leftMatches.length; i++) {
+    leftMatches[i].start += offset;
+    leftMatches[i].end += offset;
+  }
+  leftMatches.splice(leftIdx, 1);
+  if (leftMatches.length === 0) {
+    searchLeftCount.textContent = '無結果';
+    searchLeftInput.classList.add('no-match');
+  } else {
+    navigateLeft(Math.min(leftIdx, leftMatches.length - 1));
+  }
+  scheduleSourceToQuill();
+  schedulePreview();
+}
+
+function replaceLeftAll() {
+  const q = searchLeftInput.value;
+  const r = searchLeftReplace.value;
+  if (!q || leftMatches.length === 0) return;
+  const count = leftMatches.length;
+  for (let i = leftMatches.length - 1; i >= 0; i--) {
+    const m = leftMatches[i];
+    const before = sourceArea.value.substring(0, m.start);
+    const after  = sourceArea.value.substring(m.end);
+    sourceArea.value = before + r + after;
+  }
+  if (!isDirty) { isDirty = true; setStatus('● 未保存'); }
+  leftMatches = [];
+  leftIdx = -1;
+  searchLeftCount.textContent = `已替換 ${count} 個`;
+  searchLeftInput.classList.remove('no-match');
+  scheduleSourceToQuill();
+  schedulePreview();
+}
+
 searchLeftBtn.addEventListener('click', openSearchLeft);
 searchLeftInput.addEventListener('input', runSearchLeft);
 searchLeftNext.addEventListener('click', () => navigateLeft(leftIdx + 1));
@@ -551,6 +601,11 @@ searchLeftClose.addEventListener('click', closeSearchLeft);
 searchLeftInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); navigateLeft(e.shiftKey ? leftIdx - 1 : leftIdx + 1); }
   if (e.key === 'Escape') closeSearchLeft();
+});
+searchLeftReplaceOne.addEventListener('click', replaceLeftOne);
+searchLeftReplaceAll.addEventListener('click', replaceLeftAll);
+searchLeftReplace.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); replaceLeftOne(); }
 });
 
 // ════════════════════════════════════════════════════════════════════════════
