@@ -99,9 +99,10 @@ Ctrl+S    → 送出 { type: 'save', payload: { html } }
 | 訊息 type | 方向 | payload |
 |-----------|------|---------|
 | `ready` | Webview → Host | — |
-| `init` | Host → Webview | `{ html }` |
+| `init` | Host → Webview | `{ html, isMarkdown, exportFilename, uiState }` |
 | `save` | Webview → Host | `{ html }` |
 | `saved` | Host → Webview | — |
+| `uiState` | Webview → Host | `{ sourceCollapsed, toolsCollapsed, fmtCollapsed }`（收合狀態，存入 `globalState`） |
 
 > 新增訊息類型時，必須同時更新本表與 [HtmlEditorProvider.ts](../../src/extension/HtmlEditorProvider.ts) 及 Webview 端處理邏輯。
 
@@ -111,7 +112,8 @@ Ctrl+S    → 送出 { type: 'save', payload: { html } }
 
 1. **CSP 必須含 `${webview.cspSource}`** — `script-src` / `style-src` 缺它則 bundle 載入失敗、畫面空白。
 2. **`acquireVsCodeApi()` 只能呼叫一次** — 不要在 HTML 另加 inline script 搶用 API。
-3. **HTML 必須提供 bundle 需要的所有元素 ID** — `sourceArea`、`editor`、`preview` 及各工具列/搜尋按鈕。
+3. **HTML 必須提供 bundle 需要的所有元素 ID** — `sourceArea`、`editor`、`preview`、`toolsBar`、
+   `toolsToggle`、`fmtToggle` 及各工具列/搜尋按鈕。
 
 ---
 

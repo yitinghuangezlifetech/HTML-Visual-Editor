@@ -1,4 +1,5 @@
 import { htmlToMarkdown } from '../utils/htmlToMarkdown';
+import { DEFAULT_THEME_CSS, buildHtmlDocument } from '../utils/theme';
 
 describe('htmlToMarkdown', () => {
   describe('基础转换', () => {
@@ -95,6 +96,67 @@ describe('htmlToMarkdown', () => {
       const md = htmlToMarkdown(html);
       expect(md).toContain('<tag>');
       expect(md).toContain('&');
+    });
+  });
+
+  // spec: .kiro/spec/table-header/
+  describe('表格（GFM）', () => {
+    test('thead / th 表格轉為標準 GFM 表格（含分隔列）', () => {
+      // Arrange
+      const html =
+        '<table><thead><tr><th>模組</th><th>說明</th></tr></thead>' +
+        '<tbody><tr><td>稽核記錄</td><td>逐項檢核</td></tr></tbody></table>';
+
+      // Act
+      const md = htmlToMarkdown(html);
+
+      // Assert
+      expect(md).toContain('| 模組 | 說明 |');
+      expect(md).toMatch(/\|\s*-{3,}\s*\|/);
+      expect(md).toContain('| 稽核記錄 | 逐項檢核 |');
+    });
+
+    test('無 thead 的 Quill 表格仍輸出合法 GFM 表格（不被拆成散落文字）', () => {
+      const html =
+        '<table><tbody><tr data-row="r1"><td data-row="r1">模組</td><td data-row="r1">說明</td></tr>' +
+        '<tr data-row="r2"><td data-row="r2">稽核記錄</td><td data-row="r2">逐項檢核</td></tr></tbody></table>';
+
+      const md = htmlToMarkdown(html);
+
+      expect(md).toContain('| 模組 | 說明 |');
+      expect(md).toMatch(/\|\s*-{3,}\s*\|/);
+      expect(md).toContain('| 稽核記錄 | 逐項檢核 |');
+    });
+
+    test('單列表格亦產生標頭列（minRows: 1）', () => {
+      const md = htmlToMarkdown('<table><tbody><tr><td>只有一列</td></tr></tbody></table>');
+
+      expect(md).toContain('| 只有一列 |');
+      expect(md).toMatch(/\|\s*-{3,}\s*\|/);
+    });
+  });
+
+  describe('非內文節點', () => {
+    test('完整文件的主題 CSS 與 title 文字不外洩到 Markdown', () => {
+      // Arrange：save 實際傳入的形狀（已包主題的完整 HTML 文件）
+      const full = buildHtmlDocument('<h1>標題</h1><p>內容</p>', 'CLAUDE', DEFAULT_THEME_CSS);
+
+      // Act
+      const md = htmlToMarkdown(full);
+
+      // Assert
+      expect(md).not.toContain('Noto Sans TC');
+      expect(md).not.toContain('border-collapse');
+      expect(md).not.toContain('CLAUDE');
+      expect(md).toContain('# 標題');
+      expect(md).toContain('內容');
+    });
+
+    test('<script> 內容不外洩', () => {
+      const md = htmlToMarkdown('<p>hi</p><script>alert("x")</script>');
+
+      expect(md).not.toContain('alert');
+      expect(md).toContain('hi');
     });
   });
 });

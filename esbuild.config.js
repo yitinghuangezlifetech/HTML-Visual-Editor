@@ -9,7 +9,10 @@ const hostConfig = {
   bundle: true,
   platform: 'node',
   format: 'cjs',
-  external: ['vscode', 'path', 'parse5'],
+  // 只有 vscode 與 Node 內建模組可 external：vsce 以 --no-dependencies 打包，
+  // 不隨 vsix 附帶 node_modules，任何 external 的 npm 套件都會在執行期
+  // MODULE_NOT_FOUND 導致擴充功能載入失敗（parse5 曾因此踩雷）。
+  external: ['vscode', 'path'],
   outfile: 'dist/extension.js',
   sourcemap: true,
   tsconfig: 'tsconfig.json',

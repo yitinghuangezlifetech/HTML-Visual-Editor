@@ -4,13 +4,78 @@ import * as path from 'path';
 import mammoth from 'mammoth';
 import { htmlToMarkdown } from './utils/htmlToMarkdown';
 import { markdownToHtml } from './utils/markdownToHtml';
+import { buildHtmlDocument, resolveThemeCss } from './utils/theme';
+import { demoteTableHeaders } from './utils/tableHeader';
 
 // Extension context held for use inside HtmlEditorProvider
 let _extensionContext: vscode.ExtensionContext;
 
+/** Toolbar collapse preferences, persisted across sessions in globalState. */
+const UI_STATE_KEY = 'htmlVisualEditor.uiState';
+const DEFAULT_UI_STATE = { sourceCollapsed: false, toolsCollapsed: false, fmtCollapsed: false };
+
 class HtmlEditorProvider implements vscode.CustomEditorProvider {
   public async openCustomDocument(uri: vscode.Uri): Promise<vscode.CustomDocument> {
     return { uri, dispose: () => {} };
+  }
+
+  private isMarkdownDocument(uri: vscode.Uri): boolean {
+    return path.extname(uri.fsPath).toLowerCase() === '.md';
+  }
+
+  private getDocumentTitle(uri: vscode.Uri): string {
+    return path.basename(uri.fsPath, path.extname(uri.fsPath));
+  }
+
+  private getHtmlExportPath(uri: vscode.Uri): string {
+    return path.join(path.dirname(uri.fsPath), `${this.getDocumentTitle(uri)}.html`);
+  }
+
+  /** 解析文件適用的主題 CSS（.kiro/assets/doc-style.css 優先，fallback 內建「規格藍」） */
+  private resolveTheme(uri: vscode.Uri): string {
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+    return resolveThemeCss(uri.fsPath, workspaceFolder?.uri.fsPath);
+  }
+
+  private toHtmlDocument(content: string, title: string, css: string): string {
+    return buildHtmlDocument(content, title, css);
+  }
+
+  /**
+   * 送進 Webview 的 HTML。
+   *
+   * 必須降級 `thead > th` → `tbody > td`：Quill 的 table 模組只認得 TD / TR / TBODY，
+   * 含 thead 的表格載入後表頭整列會被壓成單一區塊。存檔／轉存時 buildHtmlDocument()
+   * 會再升級回來（spec: .kiro/spec/table-header/）。
+   */
+  private getEditorHtml(uri: vscode.Uri, content: string): string {
+    const html = this.isMarkdownDocument(uri)
+      ? markdownToHtml(content, this.getDocumentTitle(uri), this.resolveTheme(uri))
+      : content;
+    return demoteTableHeaders(html);
+  }
+
+  private saveHtmlExport(
+    document: vscode.CustomDocument,
+    webviewPanel: vscode.WebviewPanel,
+    content: string
+  ): void {
+    const htmlPath = this.getHtmlExportPath(document.uri);
+    const html = this.toHtmlDocument(
+      content,
+      this.getDocumentTitle(document.uri),
+      this.resolveTheme(document.uri)
+    );
+    fs.writeFileSync(htmlPath, html, 'utf-8');
+    webviewPanel.webview.postMessage({
+      type: 'htmlExported',
+      payload: {
+        path: htmlPath,
+        filename: path.basename(htmlPath),
+        timestamp: new Date().toISOString(),
+      },
+    });
+    console.log(`[HTML-Editor] Exported HTML: ${htmlPath}`);
   }
 
   public async resolveCustomEditor(
@@ -37,10 +102,16 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
       if (message.type === 'save') {
         try {
           const content = message.payload.html as string;
-          // Wrap bare fragment in a full HTML document
-          const toWrite = content.trimStart().startsWith('<!DOCTYPE') || content.trimStart().startsWith('<html')
-            ? content
-            : `<!DOCTYPE html>\n<html lang="zh-TW">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>${path.basename(document.uri.fsPath, '.html')}</title>\n</head>\n<body>\n${content}\n</body>\n</html>`;
+          const toWrite = this.toHtmlDocument(
+            content,
+            this.getDocumentTitle(document.uri),
+            this.resolveTheme(document.uri)
+          );
+
+          if (this.isMarkdownDocument(document.uri)) {
+            this.saveHtmlExport(document, webviewPanel, toWrite);
+            return;
+          }
 
           fs.writeFileSync(document.uri.fsPath, toWrite, 'utf-8');
 
@@ -57,13 +128,41 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
           webviewPanel.webview.postMessage({ type: 'saveFailed', error: msg });
           vscode.window.showErrorMessage(`Failed to save: ${msg}`);
         }
+      } else if (message.type === 'exportHtml') {
+        try {
+          this.saveHtmlExport(document, webviewPanel, message.payload.html as string);
+          vscode.window.showInformationMessage(`已轉存 HTML: ${path.basename(this.getHtmlExportPath(document.uri))}`);
+        } catch (error: any) {
+          const msg = error?.message || String(error);
+          webviewPanel.webview.postMessage({ type: 'exportHtmlFailed', error: msg });
+          vscode.window.showErrorMessage(`Failed to export HTML: ${msg}`);
+        }
       } else if (message.type === 'ready') {
         try {
-          const html = fs.readFileSync(document.uri.fsPath, 'utf-8');
-          webviewPanel.webview.postMessage({ type: 'init', payload: { html } });
+          const fileContent = fs.readFileSync(document.uri.fsPath, 'utf-8');
+          const isMarkdown = this.isMarkdownDocument(document.uri);
+          const html = this.getEditorHtml(document.uri, fileContent);
+          webviewPanel.webview.postMessage({
+            type: 'init',
+            payload: {
+              html,
+              isMarkdown,
+              exportFilename: path.basename(this.getHtmlExportPath(document.uri)),
+              uiState: _extensionContext.globalState.get(UI_STATE_KEY, DEFAULT_UI_STATE),
+            },
+          });
         } catch (error: any) {
           vscode.window.showErrorMessage(`Failed to read file: ${error?.message}`);
         }
+      } else if (message.type === 'uiState') {
+        // Toolbar collapse preferences. Stored in globalState (not webview
+        // setState) so they survive closing and reopening the file; the
+        // preference is shared by every document, which is what users expect
+        // from a layout habit.
+        await _extensionContext.globalState.update(UI_STATE_KEY, {
+          ...DEFAULT_UI_STATE,
+          ...(message.payload || {}),
+        });
       } else if (message.type === 'openLink') {
         const raw: string = (message.raw || '').trim();
         if (!raw || raw.startsWith('#')) return; // anchor-only links → ignore
@@ -108,7 +207,7 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
 
           const srcPath   = picked[0].fsPath;
           const htmlDir   = path.dirname(document.uri.fsPath);
-          const htmlBase  = path.basename(document.uri.fsPath, '.html');
+          const htmlBase  = this.getDocumentTitle(document.uri);
           const attachDir = path.join(htmlDir, htmlBase);
 
           // Ensure attachment folder exists
@@ -264,8 +363,6 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
     .topbar-title { font-size: 13px; font-weight: 600; color: #ccc; margin-right: 8px; }
     .topbar button { padding: 4px 11px; border: none; border-radius: 3px; font-size: 12px; cursor: pointer; background: #0e639c; color: #fff; }
     .topbar button:hover { background: #1177bb; }
-    .topbar button#saveBtn { background: #2d7d46; }
-    .topbar button#saveBtn:hover { background: #3a9c5a; }
     .status { margin-left: auto; font-size: 11px; color: #888; min-width: 160px; text-align: right; }
     .status.saved { color: #6a9955; }
     .status.error { color: #f48771; }
@@ -280,7 +377,7 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
     .resizer { width: 5px; background: #3e3e42; cursor: col-resize; flex-shrink: 0; position: relative; z-index: 10; }
     .resizer:hover, .resizer.dragging { background: #007acc; }
 
-    .panel-header { display: flex; align-items: center; gap: 4px; padding: 4px 10px; background: #2d2d30; border-bottom: 1px solid #3e3e42; flex-shrink: 0; user-select: none; }
+    .panel-header { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; row-gap: 4px; padding: 4px 10px; background: #2d2d30; border-bottom: 1px solid #3e3e42; flex-shrink: 0; user-select: none; }
     .panel-header .label { font-size: 11px; font-weight: 600; color: #858585; letter-spacing: 0.5px; text-transform: uppercase; flex: 1; }
     .zoom-btn { padding: 1px 7px; border: 1px solid #555; border-radius: 3px; background: transparent; color: #aaa; font-size: 13px; font-weight: bold; cursor: pointer; }
     .zoom-btn:hover { background: #3e3e42; color: #fff; }
@@ -289,8 +386,17 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
     .win-btn:hover  { background: #3e3e42; color: #fff; }
     .win-btn.active { background: #6c4fb3; color: #fff; border-color: #6c4fb3; }
     .win-sep { width: 1px; height: 12px; background: #444; margin: 0 2px; }
+    /* Header action buttons (Save / 轉存html / 收闔原始碼), moved out of the topbar
+       so they sit next to 👁 Preview, close to where editing actually happens. */
+    .hdr-btn { padding: 1px 8px; border: 1px solid #555; border-radius: 3px; background: transparent; color: #ccc; font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .hdr-btn:hover { background: #3e3e42; color: #fff; }
+    .hdr-btn.save { background: #2d7d46; color: #fff; border-color: #2d7d46; }
+    .hdr-btn.save:hover { background: #3a9c5a; border-color: #3a9c5a; }
+    .hdr-btn.export { background: #0e639c; color: #fff; border-color: #0e639c; }
+    .hdr-btn.export:hover { background: #1177bb; border-color: #1177bb; }
 
-    .search-bar { display: none; flex-direction: column; gap: 4px; padding: 4px 10px; background: #1e1e1e; border-bottom: 1px solid #3e3e42; flex-shrink: 0; }
+    .search-bar { display: none; padding: 4px 10px; background: #1e1e1e; border-bottom: 1px solid #3e3e42; flex-shrink: 0; }
+    .search-bar.show { display: flex; flex-direction: column; gap: 4px; }
     .search-row { display: flex; align-items: center; gap: 4px; }
     .search-bar input { flex: 1; background: #3c3c3c; border: 1px solid #555; border-radius: 3px; color: #d4d4d4; font-size: 12px; padding: 3px 8px; outline: none; min-width: 0; }
     .search-bar input:focus { border-color: #007acc; }
@@ -300,13 +406,25 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
     .s-btn:hover { background: #3e3e42; color: #fff; }
     .s-btn.close-btn { font-size: 14px; padding: 1px 6px; }
 
-    .table-bar { display: flex; align-items: center; gap: 3px; padding: 4px 10px; background: #252526; border-bottom: 1px solid #3e3e42; flex-shrink: 0; position: relative; }
+    .table-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 3px; row-gap: 3px; padding: 4px 10px; background: #252526; border-bottom: 1px solid #3e3e42; flex-shrink: 0; position: relative; }
     .table-bar-label { font-size: 11px; color: #858585; margin-right: 4px; }
     .t-btn { padding: 2px 7px; border: 1px solid #555; border-radius: 3px; background: transparent; color: #bbb; font-size: 11px; cursor: pointer; white-space: nowrap; }
     .t-btn:hover { background: #3e3e42; color: #fff; }
+    /* Table + block controls share one row; the group collapses, the toggles stay. */
+    .tools-group { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 3px; row-gap: 3px; flex: 1; min-width: 0; }
+    #toolsBar.collapsed .tools-group { display: none; }
+    .t-btn.toggle { color: #858585; min-width: 22px; text-align: center; }
+    .t-btn.toggle:hover { color: #fff; }
+    /* Quill toolbar collapse (see #fmtToggle) — CSS only, the Quill instance is untouched.
+       The toggle lives in .fmt-row next to (not inside) the toolbar, so it stays
+       reachable while the toolbar is hidden. */
+    .ql-toolbar.ql-snow.collapsed { display: none !important; }
+    .fmt-row { display: flex; align-items: flex-start; background: #2d2d30; border-bottom: 1px solid #3e3e42; flex-shrink: 0; }
+    .fmt-row > .ql-toolbar.ql-snow { flex: 1; min-width: 0; border-bottom: none; }
+    #fmtToggle { margin: 6px 0 6px 8px; flex-shrink: 0; }
 
     /* Inline table-size popover (shown inside the editor, not a top input bar) */
-    .table-popover { display: none; position: absolute; top: 30px; left: 10px; z-index: 100;
+    .table-popover { display: none; position: absolute; top: calc(100% + 4px); left: 10px; z-index: 100;
       background: #2d2d30; border: 1px solid #555; border-radius: 6px; padding: 10px 12px;
       box-shadow: 0 4px 16px rgba(0,0,0,.5); align-items: center; gap: 8px; }
     .table-popover.show { display: flex; }
@@ -337,6 +455,11 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
     .ql-editor table { border-collapse: collapse; width: 100%; margin: 12px 0; }
     .ql-editor td, .ql-editor th { border: 1px solid #ccc; padding: 6px 10px; min-width: 40px; }
     .ql-editor th { background: #f4f4f4; font-weight: 600; }
+    /* Block container: dashed outline is an editor-only affordance (not saved to
+       the HTML output) so an inserted/selected block is always visible, even
+       empty or before a background color is set. */
+    .ql-editor .ve-block { min-height: 1.6em; padding: 8px 10px; margin: 6px 0; border: 1px dashed #b8b8b8; border-radius: 4px; }
+    .ql-editor .ve-block:hover, .ql-editor .ve-block:focus-within { border-color: #667eea; }
 
     /* Right: live preview (hidden by default) */
     #preview { display: none; flex: 1; border: none; background: #fff; }
@@ -345,8 +468,6 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
 <body>
   <div class="topbar">
     <span class="topbar-title">✏ HTML Visual Editor</span>
-    <button id="saveBtn" title="Save (Ctrl+S)">💾 Save</button>
-    <button id="toggleSourceBtn" title="收闔/展開原始碼" style="background:#3e3e42;color:#d4d4d4;">◀ 收闔原始碼</button>
     <div class="status" id="status"></div>
   </div>
 
@@ -392,6 +513,10 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
         <div class="win-sep"></div>
         <button class="win-btn active" id="btnRich"    title="Rich Text 編輯模式">🖊 Rich</button>
         <button class="win-btn"        id="btnPreview" title="預覽模式">👁 Preview</button>
+        <div class="win-sep"></div>
+        <button class="hdr-btn save"   id="saveBtn"         title="Save (Ctrl+S)">💾 Save</button>
+        <button class="hdr-btn export" id="exportHtmlBtn"   title="存為 HTML" style="display:none;">轉存html</button>
+        <button class="hdr-btn"        id="toggleSourceBtn" title="收闔/展開原始碼">◀ 收闔原始碼</button>
       </div>
       <div class="search-bar" id="searchRight">
         <input type="text" id="searchRightInput" placeholder="搜尋內容...">
@@ -400,18 +525,28 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
         <button class="s-btn" id="searchRightNext" title="下一個">↓</button>
         <button class="s-btn close-btn" id="searchRightClose" title="關閉">✕</button>
       </div>
-      <div class="table-bar" id="tableBar">
-        <span class="table-bar-label">表格:</span>
-        <button class="t-btn" id="tblInsert"   title="插入表格">⊞ 插入</button>
-        <div class="win-sep"></div>
-        <button class="t-btn" id="tblRowAbove" title="上方插入列">↑列</button>
-        <button class="t-btn" id="tblRowBelow" title="下方插入列">↓列</button>
-        <button class="t-btn" id="tblColLeft"  title="左方插入欄">←欄</button>
-        <button class="t-btn" id="tblColRight" title="右方插入欄">欄→</button>
-        <div class="win-sep"></div>
-        <button class="t-btn" id="tblDelRow"   title="刪除列">刪列</button>
-        <button class="t-btn" id="tblDelCol"   title="刪除欄">刪欄</button>
-        <button class="t-btn" id="tblDelTable" title="刪除表格">刪表格</button>
+      <div class="table-bar" id="toolsBar">
+        <button class="t-btn toggle" id="toolsToggle" title="收合/展開 表格與區塊工具">▾</button>
+        <span class="tools-group" id="toolsGroups">
+          <span class="table-bar-label">表格:</span>
+          <button class="t-btn" id="tblInsert"   title="插入表格">⊞ 插入</button>
+          <div class="win-sep"></div>
+          <button class="t-btn" id="tblRowAbove" title="上方插入列">↑列</button>
+          <button class="t-btn" id="tblRowBelow" title="下方插入列">↓列</button>
+          <button class="t-btn" id="tblColLeft"  title="左方插入欄">←欄</button>
+          <button class="t-btn" id="tblColRight" title="右方插入欄">欄→</button>
+          <div class="win-sep"></div>
+          <button class="t-btn" id="tblDelRow"   title="刪除列">刪列</button>
+          <button class="t-btn" id="tblDelCol"   title="刪除欄">刪欄</button>
+          <button class="t-btn" id="tblDelTable" title="刪除表格">刪表格</button>
+          <div class="win-sep"></div>
+          <span class="table-bar-label">區塊:</span>
+          <button class="t-btn" id="blkInsert" title="插入區塊">⬛ 插入區塊</button>
+          <label class="t-btn" title="設定底色" style="display:inline-flex;align-items:center;gap:4px;">
+            底色 <input type="color" id="blkBgColor" style="width:22px;height:18px;padding:0;border:none;vertical-align:middle;cursor:pointer;">
+          </label>
+          <button class="t-btn" id="blkBgClear" title="清除底色">清除底色</button>
+        </span>
         <div class="table-popover" id="tablePopover">
           <label>列 <input type="number" id="tblRows" value="3" min="1" max="20"></label>
           <span class="tp-x">×</span>
@@ -421,6 +556,12 @@ class HtmlEditorProvider implements vscode.CustomEditorProvider {
         </div>
       </div>
       <div id="editorWrap">
+        <!-- Quill generates .ql-toolbar itself; rich-editor.ts moves it into this
+             row so the collapse toggle sits to the left of the font controls and
+             stays visible after the toolbar is hidden. -->
+        <div class="fmt-row" id="fmtRow">
+          <button class="t-btn toggle fmt" id="fmtToggle" title="收合/展開 文字工具列">▾ 文字</button>
+        </div>
         <div id="editor"></div>
       </div>
       <iframe id="preview" sandbox="allow-scripts allow-same-origin"></iframe>
@@ -450,6 +591,41 @@ export function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(registration);
 
+    // 建立文件主題範本（spec: .kiro/spec/theme-template/）
+    const createThemeTemplateCmd = vscode.commands.registerCommand(
+      'htmlVisualEditor.createThemeTemplate',
+      async () => {
+        const ws = vscode.workspace.workspaceFolders?.[0];
+        if (!ws) {
+          vscode.window.showErrorMessage('請先開啟工作區資料夾，再建立文件主題範本。');
+          return;
+        }
+        const src = path.join(context.extensionPath, 'media', 'doc-style.template.css');
+        const destDir = path.join(ws.uri.fsPath, '.kiro', 'assets');
+        const dest = path.join(destDir, 'doc-style.css');
+        try {
+          if (fs.existsSync(dest)) {
+            const pick = await vscode.window.showWarningMessage(
+              '.kiro/assets/doc-style.css 已存在，要以範本覆寫嗎？（原內容將被取代）',
+              { modal: true },
+              '覆寫'
+            );
+            if (pick !== '覆寫') return;
+          }
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.copyFileSync(src, dest);
+          vscode.window.showInformationMessage(
+            `已建立文件主題範本：${path.relative(ws.uri.fsPath, dest)}（logo 置換方式見檔頭註解）`
+          );
+          console.log(`[HTML-Editor] ✅ Theme template created: ${dest}`);
+        } catch (error: any) {
+          const msg = error?.message || String(error);
+          vscode.window.showErrorMessage(`建立主題範本失敗: ${msg}`);
+        }
+      }
+    );
+    context.subscriptions.push(createThemeTemplateCmd);
+
     // Auto-save HTML as Markdown
     const mdSyncDisposable = vscode.workspace.onDidSaveTextDocument((doc) => {
       if (doc.languageId !== 'html' && !doc.uri.fsPath.endsWith('.html')) return;
@@ -472,7 +648,11 @@ export function activate(context: vscode.ExtensionContext) {
       const htmlPath = doc.uri.fsPath.replace(/\.md$/i, '.html');
       const title = path.basename(doc.uri.fsPath, '.md');
       try {
-        const html = markdownToHtml(doc.getText(), title);
+        const themeCss = resolveThemeCss(
+          doc.uri.fsPath,
+          vscode.workspace.getWorkspaceFolder(doc.uri)?.uri.fsPath
+        );
+        const html = markdownToHtml(doc.getText(), title, themeCss);
         fs.writeFileSync(htmlPath, html, 'utf-8');
         console.log(`[HTML-Editor] ✅ Auto-saved HTML: ${htmlPath}`);
       } catch (error: any) {

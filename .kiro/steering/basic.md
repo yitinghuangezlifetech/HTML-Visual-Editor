@@ -69,9 +69,9 @@
 
 | 步驟 | 產出檔案 | 中斷點 |
 |------|---------|--------|
-| Step 1 | `specs/{feature}/requirements.md` | ⛔ 等待使用者確認 |
-| Step 2 | `specs/{feature}/design.md` | ⛔ 等待使用者確認 |
-| Step 3 | `specs/{feature}/tasks.md` | 逐項完成，勾選 `[x]` |
+| Step 1 | `.kiro/spec/{feature}/requirements.md` | ⛔ 等待使用者確認 |
+| Step 2 | `.kiro/spec/{feature}/design.md` | ⛔ 等待使用者確認 |
+| Step 3 | `.kiro/spec/{feature}/tasks.md` | 逐項完成，勾選 `[x]` |
 
 ### 強制規則
 1. ❌ 未完成 requirements.md 不得建立 design.md；未完成 design.md 不得建立 tasks.md。

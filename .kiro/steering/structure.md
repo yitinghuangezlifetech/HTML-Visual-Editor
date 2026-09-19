@@ -52,7 +52,7 @@ d:/html-visual-editor/
 ├── .kiro/
 │   ├── steering/                     # ← source of truth（basic/tech/structure/product/dash）
 │   └── spec/                         # 既有規格文件（overview/development/features/...）
-├── specs/                            # ← Spec-First 新功能流程的產出（requirements/design/tasks）
+│       └── {feature}/                # ← Spec-First 新功能流程的產出（requirements/design/tasks）
 ├── package.json
 ├── esbuild.config.js
 ├── tsconfig.json                     # Extension Host 編譯設定
@@ -71,7 +71,7 @@ d:/html-visual-editor/
 | 可共用的轉換/解析工具 | `src/extension/utils/`（Host）或 webview 對應位置 |
 | 大型 UI 區塊（面板、檢查器） | `src/webview/panels/` |
 | 編輯器核心行為（選取、拖放、歷史） | `src/webview/editor/` |
-| 新功能規格 | `specs/{feature}/` |
+| 新功能規格 | `.kiro/spec/{feature}/` |
 | 專案規範 | `.kiro/steering/` |
 
 ---

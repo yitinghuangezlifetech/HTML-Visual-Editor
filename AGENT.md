@@ -26,11 +26,11 @@
 
 任何新功能或行為調整，請遵循本專案的 Spec-First 流程：
 
-1. 建立 `specs/{feature}/requirements.md`
+1. 建立 `.kiro/spec/{feature}/requirements.md`
 2. 等待使用者確認
-3. 建立 `specs/{feature}/design.md`
+3. 建立 `.kiro/spec/{feature}/design.md`
 4. 等待使用者確認
-5. 建立 `specs/{feature}/tasks.md`
+5. 建立 `.kiro/spec/{feature}/tasks.md`
 6. 逐項實作任務並標記完成
 
 不得跳過步驟。三份 spec 文件完成並核准前，不得撰寫 Provider、Webview 元件、工具函式、指令或路由。

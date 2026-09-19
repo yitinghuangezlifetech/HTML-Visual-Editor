@@ -31,10 +31,45 @@ ImageBlot.sanitize = (url: string) => {
   return _imgSanitize(url);
 };
 
+// ── Custom block: insertable "div" container (for block background feature) ──
+const Block = Quill.import('blots/block') as any;
+class BlockContainer extends Block {
+  static blotName = 'block';
+  static tagName = 'div';
+  static className = 've-block';
+}
+Quill.register(BlockContainer, true);
+
+// ── Block-level background color (applies to any line: block, p, h1-6, blockquote…) ──
+// Quill's Parchment registry keys style-based formats by CSS property name (keyName)
+// for HTML/paste matching, and that keyed slot is global — a second Attributor
+// registered against the same CSS property (e.g. 'background-color', already owned
+// by Quill's built-in inline `background` format) silently overwrites the DOM style
+// of anything using the other format. Use the `background` *shorthand* property
+// instead: distinct keyName, same visual result for a solid fill, no collision.
+const Parchment = Quill.import('parchment') as any;
+const BlockBackgroundStyle = new Parchment.StyleAttributor('blockBackground', 'background', {
+  scope: Parchment.Scope.BLOCK,
+});
+Quill.register(BlockBackgroundStyle, true);
+
+// ── Search-highlight color, kept separate from the user-facing 'background' ──
+// format so opening/closing search doesn't wipe out text background colors the
+// user set via the toolbar (see doSearchRight / navigateRight / closeSearchRight).
+// Uses `background-image` (a solid-color gradient) rather than `background-color`
+// so it doesn't collide with the built-in `background` format's keyName either —
+// see note above.
+const SearchMarkStyle = new Parchment.StyleAttributor('searchMark', 'background-image', {
+  scope: Parchment.Scope.INLINE,
+});
+Quill.register(SearchMarkStyle, true);
+const solidFill = (hex: string) => `linear-gradient(${hex}, ${hex})`;
+
 const vscode = acquireVsCodeApi();
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 const saveBtn        = document.getElementById('saveBtn')!;
+const exportHtmlBtn  = document.getElementById('exportHtmlBtn') as HTMLButtonElement | null;
 const statusEl       = document.getElementById('status')!;
 const sourceArea     = document.getElementById('sourceArea') as HTMLTextAreaElement;
 const preview        = document.getElementById('preview') as HTMLIFrameElement;
@@ -42,8 +77,11 @@ const editorWrap     = document.getElementById('editorWrap')!;
 const rightLabel     = document.getElementById('rightLabel')!;
 const btnRich        = document.getElementById('btnRich')!;
 const btnPreview     = document.getElementById('btnPreview')!;
+// Merged table + block toolbar (one row, collapsible)
+const toolsBar       = document.getElementById('toolsBar')!;
+const toolsToggle    = document.getElementById('toolsToggle')!;
+const fmtToggle      = document.getElementById('fmtToggle')!;
 // Table controls
-const tableBar       = document.getElementById('tableBar')!;
 const tblInsert      = document.getElementById('tblInsert')!;
 const tblRowAbove    = document.getElementById('tblRowAbove')!;
 const tblRowBelow    = document.getElementById('tblRowBelow')!;
@@ -57,6 +95,10 @@ const tblRowsInput   = document.getElementById('tblRows') as HTMLInputElement;
 const tblColsInput   = document.getElementById('tblCols') as HTMLInputElement;
 const tblConfirm     = document.getElementById('tblConfirm')!;
 const tblCancel      = document.getElementById('tblCancel')!;
+// Block controls
+const blkInsert      = document.getElementById('blkInsert')!;
+const blkBgColor     = document.getElementById('blkBgColor') as HTMLInputElement;
+const blkBgClear     = document.getElementById('blkBgClear')!;
 // Font zoom
 const zoomInBtn      = document.getElementById('zoomIn')!;
 const zoomOutBtn     = document.getElementById('zoomOut')!;
@@ -93,6 +135,7 @@ const searchRightBtn   = document.getElementById('searchRightBtn')!;
 // ── State ─────────────────────────────────────────────────────────────────────
 let richMode   = true;   // Rich Editor is the default right-panel view
 let isDirty    = false;
+let isMarkdownDocument = false;
 let previewTimer: ReturnType<typeof setTimeout> | null = null;
 let syncTimer: ReturnType<typeof setTimeout> | null = null;
 let syncing    = false;  // Guard against source ↔ Quill update feedback loop
@@ -131,6 +174,16 @@ const quill = new Quill('#editor', {
 });
 
 const tableModule = quill.getModule('table') as any;
+
+// ── Place the format-toolbar toggle to the left of the Quill toolbar ──────────
+// Quill inserts .ql-toolbar just before #editor. Move it into #fmtRow so the
+// toggle sits beside the font controls yet stays outside the toolbar — hiding
+// the toolbar must not hide the button that brings it back.
+{
+  const tb = document.querySelector('.ql-toolbar.ql-snow');
+  const fmtRow = document.getElementById('fmtRow');
+  if (tb && fmtRow) fmtRow.appendChild(tb);
+}
 
 // ── Image resize on double-click ──────────────────────────────────────────────
 let resizeTargetImg: HTMLImageElement | null = null;
@@ -250,6 +303,80 @@ tblDelRow.addEventListener('click',   () => tableOp(() => tableModule.deleteRow(
 tblDelCol.addEventListener('click',   () => tableOp(() => tableModule.deleteColumn(), false));
 tblDelTable.addEventListener('click', () => tableOp(() => tableModule.deleteTable(), false));
 
+// ── Custom hex color pickers (text color / text background) ───────────────────
+// Quill's toolbar `container` array auto-generates the whole .ql-toolbar DOM, so
+// extra controls must be appended after construction (Quill's documented way to
+// extend an auto-built toolbar) rather than declared in extension.ts's static HTML.
+{
+  const toolbarEl = (quill.getModule('toolbar') as any).container as HTMLElement;
+  const group = document.createElement('span');
+  group.className = 'ql-formats';
+
+  const makeColorInput = (id: string, title: string, format: 'color' | 'background') => {
+    const input = document.createElement('input');
+    input.type = 'color';
+    input.id = id;
+    input.title = title;
+    input.style.cssText = 'width:22px;height:22px;padding:0;border:1px solid #555;border-radius:3px;vertical-align:middle;cursor:pointer;background:transparent;';
+    input.addEventListener('input', () => {
+      if (!restoreSelection(false)) return;
+      quill.format(format, input.value, 'user');
+    });
+    return input;
+  };
+
+  group.appendChild(makeColorInput('customTextColor', '自訂文字顏色', 'color'));
+  group.appendChild(makeColorInput('customTextBg', '自訂文字底色', 'background'));
+  toolbarEl.appendChild(group);
+}
+
+// ── Block insert / block background color ──────────────────────────────────────
+function blockOp(fn: () => void, fallbackToEnd: boolean) {
+  if (!restoreSelection(fallbackToEnd)) {
+    setStatus('⚠ 請先將游標移入編輯區');
+    return;
+  }
+  try {
+    fn();
+  } catch (err) {
+    setStatus('⚠ 區塊操作失敗');
+    return;
+  }
+  syncing = true;
+  sourceArea.value = getRichHtml();
+  syncing = false;
+  schedulePreview();
+  isDirty = true;
+  setStatus('● 未保存');
+}
+
+blkInsert.addEventListener('click', () => {
+  blockOp(() => {
+    const range = quill.getSelection(true)!;
+    // Split the current position into a new empty line, formatted as `block`,
+    // so the surrounding content is untouched and the caret lands ready to type.
+    quill.insertText(range.index, '\n\n', 'user');
+    quill.formatLine(range.index + 1, 1, 'block', true, 'user');
+    quill.setSelection(range.index + 1, 0, 'silent');
+  }, true);
+});
+
+blkBgColor.addEventListener('input', () => {
+  blockOp(() => {
+    // Also mark the target line(s) as `block` so an existing paragraph gets the
+    // same visible boxed treatment as a freshly inserted block (dashed outline
+    // while editing; see .ve-block CSS), not just a bare background color.
+    quill.format('block', true, 'user');
+    quill.format('blockBackground', blkBgColor.value, 'user');
+  }, false);
+});
+
+blkBgClear.addEventListener('click', () => {
+  blockOp(() => {
+    quill.format('blockBackground', false, 'user');
+  }, false);
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function setStatus(msg: string, ok?: boolean) {
   statusEl.textContent = msg;
@@ -293,6 +420,14 @@ function loadHtml(html: string) {
 }
 
 // ── Preview sync ──────────────────────────────────────────────────────────────
+function setMarkdownMode(enabled: boolean) {
+  isMarkdownDocument = enabled;
+  if (exportHtmlBtn) {
+    exportHtmlBtn.style.display = enabled ? '' : 'none';
+  }
+  (saveBtn as HTMLElement).style.display = enabled ? 'none' : '';
+}
+
 function schedulePreview() {
   if (previewTimer) clearTimeout(previewTimer);
   previewTimer = setTimeout(refreshPreview, 350);
@@ -336,7 +471,7 @@ function setRichMode(rich: boolean) {
   if (rich) {
     editorWrap.style.display = 'flex';
     preview.style.display    = 'none';
-    tableBar.style.display   = 'flex';
+    toolsBar.style.display   = 'flex';
     rightLabel.textContent   = 'Rich Text Editor';
     btnRich.classList.add('active');
     btnPreview.classList.remove('active');
@@ -349,7 +484,7 @@ function setRichMode(rich: boolean) {
   } else {
     editorWrap.style.display = 'none';
     preview.style.display    = 'block';
-    tableBar.style.display   = 'none';
+    toolsBar.style.display   = 'none';
     rightLabel.textContent   = 'Live Preview';
     btnRich.classList.remove('active');
     btnPreview.classList.add('active');
@@ -382,25 +517,58 @@ winNarrow.addEventListener('click', () => setPanelWidth(30));
 winHalf.addEventListener('click',   () => setPanelWidth(50));
 winWide.addEventListener('click',   () => setPanelWidth(70));
 
-// ── Toggle source panel collapse ──────────────────────────────────────────────
-let sourceCollapsed = false;
+// ── Collapse state (source panel / table+block bar / Quill toolbar) ───────────
+// Persisted by the host in globalState, so the layout survives reopening a file.
+type UiState = { sourceCollapsed: boolean; toolsCollapsed: boolean; fmtCollapsed: boolean };
+const ui: UiState = { sourceCollapsed: false, toolsCollapsed: false, fmtCollapsed: false };
 let lastSourceWidth = '30%';
+
+/** Quill builds .ql-toolbar itself, so it's looked up rather than held as a ref. */
+function qlToolbar(): HTMLElement | null {
+  return document.querySelector('.ql-toolbar.ql-snow');
+}
+
+function applyUiState() {
+  // Source panel
+  panelLeft.classList.toggle('collapsed', ui.sourceCollapsed);
+  if (!ui.sourceCollapsed) panelLeft.style.flex = `0 0 ${lastSourceWidth}`;
+  if (toggleSourceBtn) {
+    toggleSourceBtn.textContent = ui.sourceCollapsed ? '▶ 展開原始碼' : '◀ 收闔原始碼';
+  }
+  // Table + block bar
+  toolsBar.classList.toggle('collapsed', ui.toolsCollapsed);
+  toolsToggle.textContent = ui.toolsCollapsed ? '▸' : '▾';
+  // Quill text toolbar — class only, the editor instance is never rebuilt.
+  qlToolbar()?.classList.toggle('collapsed', ui.fmtCollapsed);
+  fmtToggle.textContent = ui.fmtCollapsed ? '▸ 文字' : '▾ 文字';
+}
+
+function persistUiState() {
+  vscode.postMessage({ type: 'uiState', payload: ui });
+}
 
 if (toggleSourceBtn) {
   toggleSourceBtn.addEventListener('click', () => {
-    if (!sourceCollapsed) {
+    if (!ui.sourceCollapsed) {
       lastSourceWidth = panelLeft.style.flexBasis || panelLeft.style.flex.split(' ')[2] || '30%';
-      panelLeft.classList.add('collapsed');
-      toggleSourceBtn.textContent = '▶ 展開原始碼';
-      sourceCollapsed = true;
-    } else {
-      panelLeft.classList.remove('collapsed');
-      panelLeft.style.flex = `0 0 ${lastSourceWidth}`;
-      toggleSourceBtn.textContent = '◀ 收闔原始碼';
-      sourceCollapsed = false;
     }
+    ui.sourceCollapsed = !ui.sourceCollapsed;
+    applyUiState();
+    persistUiState();
   });
 }
+
+toolsToggle.addEventListener('click', () => {
+  ui.toolsCollapsed = !ui.toolsCollapsed;
+  applyUiState();
+  persistUiState();
+});
+
+fmtToggle.addEventListener('click', () => {
+  ui.fmtCollapsed = !ui.fmtCollapsed;
+  applyUiState();
+  persistUiState();
+});
 
 // ── Drag-to-resize ────────────────────────────────────────────────────────────
 let dragging = false, dragStartX = 0, dragStartWidth = 0;
@@ -473,10 +641,20 @@ quill.on('text-change', () => {
 
 // ── Save ──────────────────────────────────────────────────────────────────────
 function save() {
+  if (isMarkdownDocument) {
+    exportHtml();
+    return;
+  }
   vscode.postMessage({ type: 'save', payload: { html: sourceArea.value } });
   setStatus('⏳ 保存中...');
 }
 saveBtn.addEventListener('click', save);
+
+function exportHtml() {
+  vscode.postMessage({ type: 'exportHtml', payload: { html: sourceArea.value } });
+  setStatus('轉存 HTML 中...');
+}
+exportHtmlBtn?.addEventListener('click', exportHtml);
 
 // ── File attachment ───────────────────────────────────────────────────────────
 function insertAttachment(payload: { htmlFragment: string; filename: string; relPath: string; mode?: string }) {
@@ -503,13 +681,13 @@ let leftMatches: Array<{start: number; end: number}> = [];
 let leftIdx = -1;
 
 function openSearchLeft() {
-  searchLeftBar.style.display = 'flex';
+  searchLeftBar.classList.add('show');
   searchLeftInput.focus();
   searchLeftInput.select();
   runSearchLeft();
 }
 function closeSearchLeft() {
-  searchLeftBar.style.display = 'none';
+  searchLeftBar.classList.remove('show');
   leftMatches = [];
   leftIdx = -1;
   searchLeftCount.textContent = '';
@@ -626,7 +804,7 @@ function closeSearchRight() {
   searchRightInput.classList.remove('no-match');
   searchRightCount.textContent = '';
   // Clear Quill highlights
-  try { quill.formatText(0, quill.getLength(), 'background', false); } catch (_) {}
+  try { quill.formatText(0, quill.getLength(), 'searchMark', false); } catch (_) {}
   // Clear preview marks
   clearPreviewMarks();
   rightQuillMatches = [];
@@ -649,7 +827,7 @@ function doSearchRight() {
   searchRightInput.classList.remove('no-match');
 
   if (richMode) {
-    try { quill.formatText(0, quill.getLength(), 'background', false); } catch (_) {}
+    try { quill.formatText(0, quill.getLength(), 'searchMark', false); } catch (_) {}
     if (!q) { searchRightCount.textContent = ''; return; }
     rightQuillLen = q.length;
     const text  = quill.getText().toLowerCase();
@@ -657,7 +835,7 @@ function doSearchRight() {
     let pos = 0;
     while ((pos = text.indexOf(ql, pos)) !== -1) {
       rightQuillMatches.push(pos);
-      quill.formatText(pos, q.length, 'background', '#ffeb3b');
+      quill.formatText(pos, q.length, 'searchMark', solidFill('#ffeb3b'));
       pos += q.length;
     }
     if (!rightQuillMatches.length) {
@@ -715,8 +893,8 @@ function navigateRight(idx: number) {
 
   if (richMode) {
     // Reset all to yellow, current to orange
-    rightQuillMatches.forEach(p => quill.formatText(p, rightQuillLen, 'background', '#ffeb3b'));
-    quill.formatText(rightQuillMatches[rightIdx], rightQuillLen, 'background', '#ff9800');
+    rightQuillMatches.forEach(p => quill.formatText(p, rightQuillLen, 'searchMark', solidFill('#ffeb3b')));
+    quill.formatText(rightQuillMatches[rightIdx], rightQuillLen, 'searchMark', solidFill('#ff9800'));
     quill.setSelection(rightQuillMatches[rightIdx], rightQuillLen);
   } else {
     try {
@@ -755,9 +933,18 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('message', (event) => {
   const msg = event.data;
   switch (msg.type) {
-    case 'init':         loadHtml(msg.payload.html); break;
+    case 'init':
+      setMarkdownMode(!!msg.payload?.isMarkdown);
+      loadHtml(msg.payload.html);
+      if (msg.payload?.uiState) {
+        Object.assign(ui, msg.payload.uiState);
+        applyUiState();
+      }
+      break;
     case 'saved':        isDirty = false; setStatus('✓ 已保存 ' + new Date().toLocaleTimeString(), true); break;
     case 'saveFailed':   setStatus('❌ 保存失败: ' + msg.error, false); break;
+    case 'htmlExported': isDirty = false; setStatus(`已轉存 HTML: ${msg.payload?.filename || ''}`, true); break;
+    case 'exportHtmlFailed': setStatus('轉存 HTML 失敗: ' + msg.error, false); break;
     case 'fileAttached': insertAttachment(msg.payload); break;
     case 'attachError':  setStatus('❌ ' + msg.error); break;
     case 'inputBoxResult': {
