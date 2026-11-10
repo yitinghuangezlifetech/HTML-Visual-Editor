@@ -6,7 +6,7 @@
 node_modules/**
 src/**
 extension/**
-AGENT.md
+AGENTS.md
 CLAUDE.*
 **/*.ts
 **/*.map
